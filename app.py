@@ -541,7 +541,7 @@ def render_overview(b_stats: pd.DataFrame, stock_df: pd.DataFrame, z_window: int
             <td style="padding:8px 14px;text-align:right">{signal_html(row["z5d"])}</td>
         </tr>"""
 
-    st.markdown(f"""
+    st.html(f"""
     <div style="background:#080f1a;border:1px solid #1e293b;border-radius:8px;overflow:hidden">
         <table style="width:100%;border-collapse:collapse;font-size:12px">
             <thead>
@@ -558,7 +558,7 @@ def render_overview(b_stats: pd.DataFrame, stock_df: pd.DataFrame, z_window: int
             <tbody>{rows_html}</tbody>
         </table>
     </div>
-    """, unsafe_allow_html=True)
+    """)
 
 
 # ── ROTATION MAP TAB ───────────────────────────────────────────────────────────
@@ -694,13 +694,13 @@ def render_rotation(b_stats: pd.DataFrame, z_label: str):
             </td>
         </tr>"""
 
-    st.markdown(f"""
+    st.html(f"""
     <div style="background:#080f1a;border:1px solid #1e293b;border-radius:8px;overflow:hidden">
         <table style="width:100%;border-collapse:collapse;font-size:12px">
             <tbody>{rows_html}</tbody>
         </table>
     </div>
-    """, unsafe_allow_html=True)
+    """)
 
 
 # ── MOMENTUM RANKS TAB ─────────────────────────────────────────────────────────
@@ -750,19 +750,19 @@ def render_momentum(stock_df: pd.DataFrame, b_stats: pd.DataFrame, z_label: str)
 
     col_top, col_bot = st.columns(2)
     with col_top:
-        st.markdown(f"""
+        st.html(f"""
         <div style="background:#080f1a;border:1px solid #1e293b;border-radius:8px;padding:20px">
             <div style="font-size:10px;font-weight:700;color:#10b981;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:14px">▲ Top z-score ({mode})</div>
             {rank_rows_html(top5, True)}
         </div>
-        """, unsafe_allow_html=True)
+        """)
     with col_bot:
-        st.markdown(f"""
+        st.html(f"""
         <div style="background:#080f1a;border:1px solid #1e293b;border-radius:8px;padding:20px">
             <div style="font-size:10px;font-weight:700;color:#ef4444;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:14px">▼ Bottom z-score ({mode})</div>
             {rank_rows_html(bot5, False)}
         </div>
-        """, unsafe_allow_html=True)
+        """)
 
     st.markdown("<div style='height:20px'/>", unsafe_allow_html=True)
 
