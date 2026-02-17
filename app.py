@@ -743,16 +743,51 @@ def render_rotation(b_stats: pd.DataFrame, z_label: str):
 
     # Rotation summary table
     st.markdown("""
-    <div style="font-size:9px;font-weight:700;color:#94a3b8;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:12px">Rotation Summary</div>
+    <div style="font-size:9px;font-weight:700;color:#94a3b8;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:4px">Rotation Summary</div>
+    <div style="font-size:10px;color:#475569;margin-bottom:12px">
+        Signal uses multi-timeframe conviction: <span style="color:#94a3b8;font-family:'IBM Plex Mono',monospace">1d z &gt; 0</span> · <span style="color:#94a3b8;font-family:'IBM Plex Mono',monospace">5d z &gt; 0</span> · <span style="color:#94a3b8;font-family:'IBM Plex Mono',monospace">5d z &gt; 20d z</span>
+    </div>
     """, unsafe_allow_html=True)
 
+    def rotation_signal(row):
+        """Score 0-3 based on multi-timeframe confirmation."""
+        score = 0
+        checks = []
+        # Check 1: is today's z positive?
+        c1 = row["avgZ1d"] > 0
+        if c1: score += 1
+        checks.append(("1d σ>0", c1))
+        # Check 2: is 5d z positive?
+        c2 = row["avgZ5d"] > 0
+        if c2: score += 1
+        checks.append(("5d σ>0", c2))
+        # Check 3: is 5d z accelerating vs 20d?
+        c3 = row["avgZ5d"] > row["avgZ20d"]
+        if c3: score += 1
+        checks.append(("5d>20d", c3))
+        return score, checks
+
+    scored = []
+    for _, row in b_stats.iterrows():
+        score, checks = rotation_signal(row)
+        scored.append((score, checks, row))
+    scored.sort(key=lambda x: x[0], reverse=True)
+
     rows_html = ""
-    for _, row in b_stats.assign(_delta=b_stats["avgZ5d"] - b_stats["avgZ20d"]).sort_values("_delta").iloc[::-1].iterrows():
-        delta  = row["avgZ5d"] - row["avgZ20d"]
-        signal = "ROTATING IN" if delta > 0.5 else ("ROTATING OUT" if delta < -0.5 else "STABLE")
-        sc     = "#10b981" if signal == "ROTATING IN" else ("#ef4444" if signal == "ROTATING OUT" else "#64748b")
+    for score, checks, row in scored:
+        labels = {3: "STRONG ACCEL", 2: "ROTATING IN", 1: "ROTATING OUT", 0: "STRONG FADE"}
+        colors = {3: "#10b981", 2: "#3b82f6", 1: "#f59e0b", 0: "#ef4444"}
+        signal = labels[score]
+        sc     = colors[score]
         color  = row["color"]
         tickers_str = ", ".join(row["tickers"][:8]) + (f" +{len(row['tickers'])-8}" if len(row["tickers"]) > 8 else "")
+
+        # Build check dots
+        checks_html = ""
+        for label, passed in checks:
+            dot_c = "#10b981" if passed else "#334155"
+            checks_html += f'<span style="color:{dot_c};font-size:9px;font-family:\'IBM Plex Mono\',monospace;margin-right:6px">{"●" if passed else "○"} {label}</span>'
+
         rows_html += f"""
         <tr style="border-bottom:1px solid #0f172a">
             <td style="padding:10px 14px">
@@ -767,11 +802,9 @@ def render_rotation(b_stats: pd.DataFrame, z_label: str):
             <td style="padding:10px 14px;text-align:right"><div style="font-size:9px;color:#475569">1d σ</div>{z_html(row["avgZ1d"])}</td>
             <td style="padding:10px 14px;text-align:right"><div style="font-size:9px;color:#475569">5d σ</div>{z_html(row["avgZ5d"])}</td>
             <td style="padding:10px 14px;text-align:right"><div style="font-size:9px;color:#475569">20d σ</div>{z_html(row["avgZ20d"])}</td>
-            <td style="padding:10px 14px;text-align:right"><div style="font-size:9px;color:#475569">Raw 1d</div>{pct_html(row["avg1d"])}</td>
-            <td style="padding:10px 14px;text-align:right"><div style="font-size:9px;color:#475569">Raw 5d</div>{pct_html(row["avg5d"])}</td>
-            <td style="padding:10px 14px;text-align:right"><div style="font-size:9px;color:#475569">Raw 20d</div>{pct_html(row["avg20d"])}</td>
-            <td style="padding:10px 14px;text-align:right">
-                <span style="color:{sc};font-weight:700;font-size:9px;border:1px solid {sc}55;border-radius:3px;padding:3px 8px;font-family:'IBM Plex Mono',monospace;white-space:nowrap">{signal}</span>
+            <td style="padding:10px 14px;text-align:center">
+                <div style="margin-bottom:4px">{checks_html}</div>
+                <span style="color:{sc};font-weight:700;font-size:9px;border:1px solid {sc}55;border-radius:3px;padding:3px 8px;font-family:'IBM Plex Mono',monospace;white-space:nowrap">{score}/3 · {signal}</span>
             </td>
         </tr>"""
 
