@@ -455,7 +455,7 @@ def render_basket_cards(b_stats: pd.DataFrame):
         avg1d  = row["avg1d"]
         avg5d  = row["avg5d"]
         avg20d = row["avg20d"]
-        delta  = avg5d - avg20d
+        z_delta = row["avgZ5d"] - row["avgZ20d"]
         selected = st.session_state.selected_basket == row["basket"]
 
         border = f"2px solid {color}" if selected else "1px solid #1e293b"
@@ -476,7 +476,7 @@ def render_basket_cards(b_stats: pd.DataFrame):
                     <div style="text-align:right"><div style="font-size:9px;color:#475569;margin-bottom:2px">20D</div>{pct_html(avg20d, 13)}</div>
                 </div>
                 <div style="display:flex;justify-content:space-between;margin-bottom:8px">
-                    <div><div style="font-size:9px;color:#475569;margin-bottom:2px">Δ</div>{pct_html(delta, 11)}</div>
+                    <div><div style="font-size:9px;color:#475569;margin-bottom:2px">Δσ 5d−20d</div>{z_html(z_delta, 11)}</div>
                 </div>
                 <div style="height:2px;background:#1e293b;border-radius:2px">
                     <div style="height:100%;width:{bar_w}%;background:linear-gradient(90deg,rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},0.33),{color});border-radius:2px"></div>
