@@ -7,6 +7,7 @@ Deploy: push to GitHub → share.streamlit.io → connect repo → done.
 
 import json
 from datetime import datetime
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -131,8 +132,19 @@ header { visibility: hidden; }
 
 
 # ── SESSION STATE ──────────────────────────────────────────────────────────────
+def _load_default_baskets():
+    """Load from baskets.json in the app directory if it exists, otherwise use hardcoded defaults."""
+    baskets_path = Path(__file__).parent / "baskets.json"
+    if baskets_path.exists():
+        try:
+            with open(baskets_path) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {k: dict(v) for k, v in DEFAULT_BASKETS.items()}
+
 if "baskets" not in st.session_state:
-    st.session_state.baskets = {k: dict(v) for k, v in DEFAULT_BASKETS.items()}
+    st.session_state.baskets = _load_default_baskets()
 
 if "editing_basket" not in st.session_state:
     st.session_state.editing_basket = None   # None | str name | "__new__"
