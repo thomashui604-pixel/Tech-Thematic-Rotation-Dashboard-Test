@@ -99,25 +99,9 @@ h1, h2, h3, p, div { color: #e2e8f0; }
 /* Divider */
 hr { border-color: #1e293b !important; }
 
-/* Sidebar collapse/expand toggle */
-[data-testid="collapsedControl"] {
-    background: #0f172a !important;
-    border: 1px solid #334155 !important;
-    border-radius: 8px !important;
-    padding: 8px !important;
-    margin: 8px !important;
-    color: #f59e0b !important;
-}
-[data-testid="collapsedControl"] svg {
-    fill: #f59e0b !important;
-    stroke: #f59e0b !important;
-    width: 20px !important;
-    height: 20px !important;
-}
-[data-testid="collapsedControl"]:hover {
-    background: #1e293b !important;
-    border-color: #f59e0b !important;
-}
+/* Prevent sidebar from collapsing */
+[data-testid="collapsedControl"] { display: none !important; }
+[data-testid="stSidebar"] { min-width: 280px !important; max-width: 280px !important; }
 
 /* Remove default padding */
 .block-container { padding-top: 1.5rem; padding-bottom: 2rem; }
