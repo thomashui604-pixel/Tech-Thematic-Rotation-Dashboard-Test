@@ -681,7 +681,7 @@ def render_rotation(b_stats: pd.DataFrame, z_label: str):
     """, unsafe_allow_html=True)
 
     rows_html = ""
-    for _, row in b_stats.sort_values(by=lambda df: df["avgZ5d"] - df["avgZ20d"], key=lambda s: s).iloc[::-1].iterrows():
+    for _, row in b_stats.assign(_delta=b_stats["avgZ5d"] - b_stats["avgZ20d"]).sort_values("_delta").iloc[::-1].iterrows():
         delta  = row["avgZ5d"] - row["avgZ20d"]
         signal = "ROTATING IN" if delta > 0.5 else ("ROTATING OUT" if delta < -0.5 else "STABLE")
         sc     = "#10b981" if signal == "ROTATING IN" else ("#ef4444" if signal == "ROTATING OUT" else "#64748b")
