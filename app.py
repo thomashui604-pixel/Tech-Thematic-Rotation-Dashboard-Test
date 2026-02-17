@@ -294,6 +294,29 @@ def signal_html(z):
     return '<span style="color:#64748b;font-weight:700;font-size:10px;border:1px solid rgba(100,116,139,0.33);border-radius:3px;padding:2px 6px">NEUTRAL</span>'
 
 
+def rotation_label(z5d, z20d):
+    """Two-part label: position (leading/lagging from 20d) · direction (accel/decel from 5d vs 20d)."""
+    pos   = "LEADING" if z20d >= 0 else "LAGGING"
+    pos_c = "#10b981" if z20d >= 0 else "#ef4444"
+    if z5d > z20d:
+        dir_l, dir_c = "ACCEL", "#10b981"
+    else:
+        dir_l, dir_c = "DECEL", "#ef4444"
+    return pos, pos_c, dir_l, dir_c
+
+
+def rotation_label_html(z5d, z20d, size=9):
+    """Render the two-part rotation badge."""
+    pos, pos_c, dir_l, dir_c = rotation_label(z5d, z20d)
+    return (
+        f'<span style="font-size:{size}px;font-weight:700;font-family:\'IBM Plex Mono\',monospace">'
+        f'<span style="color:{pos_c}">{pos}</span>'
+        f'<span style="color:#334155"> · </span>'
+        f'<span style="color:{dir_c}">{dir_l}</span>'
+        f'</span>'
+    )
+
+
 # ── PLOTLY THEME ───────────────────────────────────────────────────────────────
 PLOTLY_LAYOUT = dict(
     paper_bgcolor="#080f1a",
@@ -520,12 +543,12 @@ def render_basket_cards(b_stats: pd.DataFrame):
         avg1d  = row["avg1d"]
         avg5d  = row["avg5d"]
         avg20d = row["avg20d"]
-        z_delta = row["avgZ5d"] - row["avgZ20d"]
         selected = st.session_state.selected_basket == row["basket"]
 
         border = f"2px solid {color}" if selected else "1px solid #1e293b"
         bg     = "#0f172a" if selected else "#080f1a"
         bar_w  = min(100, max(0, 50 + avg5d * 5))
+        rot_html = rotation_label_html(row["avgZ5d"], row["avgZ20d"], size=9)
 
         with cols[i]:
             st.markdown(f"""
@@ -540,9 +563,7 @@ def render_basket_cards(b_stats: pd.DataFrame):
                     <div style="text-align:center"><div style="font-size:9px;color:#475569;margin-bottom:2px">5D</div>{pct_html(avg5d, 13)}</div>
                     <div style="text-align:right"><div style="font-size:9px;color:#475569;margin-bottom:2px">20D</div>{pct_html(avg20d, 13)}</div>
                 </div>
-                <div style="display:flex;justify-content:space-between;margin-bottom:8px">
-                    <div><div style="font-size:9px;color:#475569;margin-bottom:2px">Δσ 5d−20d</div>{z_html(z_delta, 11)}</div>
-                </div>
+                <div style="margin-bottom:8px">{rot_html}</div>
                 <div style="height:2px;background:#1e293b;border-radius:2px">
                     <div style="height:100%;width:{bar_w}%;background:linear-gradient(90deg,rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},0.33),{color});border-radius:2px"></div>
                 </div>
@@ -664,10 +685,10 @@ def render_rotation(b_stats: pd.DataFrame, z_label: str):
     # Quadrant guide
     q1, q2, q3, q4 = st.columns(4)
     quadrants = [
-        ("LAGGING / RECOVERING",    "Weak LT, gaining ST",  "#f59e0b"),
-        ("LEADING / ACCELERATING",  "Strong LT + ST",       "#10b981"),
-        ("LAGGING / DETERIORATING", "Weak LT + ST",         "#ef4444"),
-        ("LEADING / FADING",        "Strong LT, losing ST", "#8b5cf6"),
+        ("LAGGING · ACCEL",  "20d z < 0, 5d z > 0",  "#f59e0b"),
+        ("LEADING · ACCEL",  "20d z > 0, 5d z > 0",  "#10b981"),
+        ("LAGGING · DECEL",  "20d z < 0, 5d z < 0",  "#ef4444"),
+        ("LEADING · DECEL",  "20d z > 0, 5d z < 0",  "#8b5cf6"),
     ]
     for col, (q, desc, color) in zip([q1, q2, q3, q4], quadrants):
         col.markdown(f"""
@@ -745,48 +766,22 @@ def render_rotation(b_stats: pd.DataFrame, z_label: str):
     st.markdown("""
     <div style="font-size:9px;font-weight:700;color:#94a3b8;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:4px">Rotation Summary</div>
     <div style="font-size:10px;color:#475569;margin-bottom:12px">
-        Signal uses multi-timeframe conviction: <span style="color:#94a3b8;font-family:'IBM Plex Mono',monospace">1d z &gt; 0</span> · <span style="color:#94a3b8;font-family:'IBM Plex Mono',monospace">5d z &gt; 0</span> · <span style="color:#94a3b8;font-family:'IBM Plex Mono',monospace">5d z &gt; 20d z</span>
+        Position from 20d z-score · Direction from 5d vs 20d z-score comparison
     </div>
     """, unsafe_allow_html=True)
 
-    def rotation_signal(row):
-        """Score 0-3 based on multi-timeframe confirmation."""
-        score = 0
-        checks = []
-        # Check 1: is today's z positive?
-        c1 = row["avgZ1d"] > 0
-        if c1: score += 1
-        checks.append(("1d σ>0", c1))
-        # Check 2: is 5d z positive?
-        c2 = row["avgZ5d"] > 0
-        if c2: score += 1
-        checks.append(("5d σ>0", c2))
-        # Check 3: is 5d z accelerating vs 20d?
-        c3 = row["avgZ5d"] > row["avgZ20d"]
-        if c3: score += 1
-        checks.append(("5d>20d", c3))
-        return score, checks
-
-    scored = []
-    for _, row in b_stats.iterrows():
-        score, checks = rotation_signal(row)
-        scored.append((score, checks, row))
-    scored.sort(key=lambda x: x[0], reverse=True)
+    # Sort: best state first (leading+accel), worst last (lagging+decel)
+    def sort_key(row):
+        pos_score = row["avgZ20d"]
+        dir_score = row["avgZ5d"] - row["avgZ20d"]
+        return pos_score + dir_score
+    sorted_rows = b_stats.iloc[b_stats.apply(sort_key, axis=1).argsort()[::-1]]
 
     rows_html = ""
-    for score, checks, row in scored:
-        labels = {3: "STRONG ACCEL", 2: "ROTATING IN", 1: "ROTATING OUT", 0: "STRONG FADE"}
-        colors = {3: "#10b981", 2: "#3b82f6", 1: "#f59e0b", 0: "#ef4444"}
-        signal = labels[score]
-        sc     = colors[score]
-        color  = row["color"]
+    for _, row in sorted_rows.iterrows():
+        color = row["color"]
         tickers_str = ", ".join(row["tickers"][:8]) + (f" +{len(row['tickers'])-8}" if len(row["tickers"]) > 8 else "")
-
-        # Build check dots
-        checks_html = ""
-        for label, passed in checks:
-            dot_c = "#10b981" if passed else "#334155"
-            checks_html += f'<span style="color:{dot_c};font-size:9px;font-family:\'IBM Plex Mono\',monospace;margin-right:6px">{"●" if passed else "○"} {label}</span>'
+        rot_badge = rotation_label_html(row["avgZ5d"], row["avgZ20d"])
 
         rows_html += f"""
         <tr style="border-bottom:1px solid #0f172a">
@@ -799,13 +794,9 @@ def render_rotation(b_stats: pd.DataFrame, z_label: str):
                     </div>
                 </div>
             </td>
-            <td style="padding:10px 14px;text-align:right"><div style="font-size:9px;color:#475569">1d σ</div>{z_html(row["avgZ1d"])}</td>
             <td style="padding:10px 14px;text-align:right"><div style="font-size:9px;color:#475569">5d σ</div>{z_html(row["avgZ5d"])}</td>
             <td style="padding:10px 14px;text-align:right"><div style="font-size:9px;color:#475569">20d σ</div>{z_html(row["avgZ20d"])}</td>
-            <td style="padding:10px 14px;text-align:center">
-                <div style="margin-bottom:4px">{checks_html}</div>
-                <span style="color:{sc};font-weight:700;font-size:9px;border:1px solid {sc}55;border-radius:3px;padding:3px 8px;font-family:'IBM Plex Mono',monospace;white-space:nowrap">{score}/3 · {signal}</span>
-            </td>
+            <td style="padding:10px 14px;text-align:right">{rot_badge}</td>
         </tr>"""
 
     st.html(f"""
