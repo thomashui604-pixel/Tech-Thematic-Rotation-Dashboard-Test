@@ -52,8 +52,8 @@ st.markdown("""
 <style>
 /* Base dark theme */
 [data-testid="stAppViewContainer"] { background: #030712; }
-[data-testid="stSidebar"] { background: #080f1a; border-right: 1px solid #1e293b; }
-[data-testid="stSidebar"] * { color: #e2e8f0 !important; }
+[data-testid="stSidebar"] { display: none !important; }
+[data-testid="collapsedControl"] { display: none !important; }
 .stTabs [data-baseweb="tab-list"] { background: transparent; border-bottom: 1px solid #1e293b; gap: 0; }
 .stTabs [data-baseweb="tab"] {
     background: transparent !important; color: #475569 !important;
@@ -303,21 +303,14 @@ PLOTLY_LAYOUT = dict(
 
 
 # ── SIDEBAR ────────────────────────────────────────────────────────────────────
-def render_sidebar():
-    with st.sidebar:
-        # Header
-        st.markdown("""
-        <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid #1e293b">
-            <div style="width:32px;height:32px;background:linear-gradient(135deg,#f59e0b,#ef4444);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:900;color:#000">⬡</div>
-            <div>
-                <div style="font-size:14px;font-weight:700;color:#e2e8f0;letter-spacing:-0.02em">THEME DESK</div>
-                <div style="font-size:9px;color:#475569;letter-spacing:0.1em;text-transform:uppercase">Tech Basket Monitor</div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+def render_settings():
+    """Render settings content inside a tab (replaces sidebar)."""
 
-        # Z-window selector
-        st.markdown('<div style="font-size:9px;font-weight:700;color:#64748b;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:6px">Z-Score Window</div>', unsafe_allow_html=True)
+    col_left, col_right = st.columns([1, 1], gap="large")
+
+    # ── LEFT COLUMN: Z-window + Basket list + editor ──
+    with col_left:
+        st.markdown('<div style="font-size:11px;font-weight:700;color:#64748b;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:6px">Z-Score Window</div>', unsafe_allow_html=True)
         z_label = st.selectbox(
             "z_window_select", list(Z_WINDOWS.keys()),
             index=list(Z_WINDOWS.values()).index(st.session_state.z_window),
@@ -325,16 +318,13 @@ def render_sidebar():
         )
         st.session_state.z_window = Z_WINDOWS[z_label]
 
-        st.divider()
-
-        # Basket list
-        st.markdown('<div style="font-size:9px;font-weight:700;color:#64748b;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:10px">Theme Baskets</div>', unsafe_allow_html=True)
+        st.markdown("<div style='height:16px'/>", unsafe_allow_html=True)
+        st.markdown('<div style="font-size:11px;font-weight:700;color:#64748b;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:10px">Theme Baskets</div>', unsafe_allow_html=True)
 
         for name, cfg in st.session_state.baskets.items():
             col_sel, col_edit = st.columns([5, 1])
             with col_sel:
                 is_sel = st.session_state.selected_basket == name
-                label  = f"**{name}**" if is_sel else name
                 if st.button(f"{'◆ ' if is_sel else '◇ '}{name}", key=f"sel_{name}", use_container_width=True):
                     st.session_state.selected_basket = name
                     st.session_state.editing_basket  = None
@@ -347,7 +337,7 @@ def render_sidebar():
         if st.button("＋ New Basket", use_container_width=True, key="new_basket_btn"):
             st.session_state.editing_basket = "__new__"
 
-        # ── Basket editor form ──────────────────────────────────────────────
+        # ── Basket editor form ──
         editing = st.session_state.editing_basket
         if editing:
             st.divider()
@@ -383,7 +373,7 @@ def render_sidebar():
                 if submitted:
                     name_clean    = new_name.strip()
                     ticker_list   = [t.strip().upper() for t in tickers_raw.replace("\n", ",").split(",") if t.strip()]
-                    ticker_unique = list(dict.fromkeys(ticker_list))  # dedupe preserving order
+                    ticker_unique = list(dict.fromkeys(ticker_list))
 
                     if not name_clean:
                         st.error("Name is required")
@@ -392,7 +382,6 @@ def render_sidebar():
                     elif is_new and name_clean in st.session_state.baskets:
                         st.error("Name already exists")
                     else:
-                        # Rename: delete old key, insert new
                         if not is_new and editing != name_clean:
                             old_data = st.session_state.baskets.pop(editing)
                             if st.session_state.selected_basket == editing:
@@ -411,7 +400,6 @@ def render_sidebar():
                     st.session_state.editing_basket = None
                     st.rerun()
 
-            # Delete button (outside form, only for existing)
             if not is_new:
                 if st.button(f"🗑 Delete '{editing}'", key="delete_basket", use_container_width=True):
                     del st.session_state.baskets[editing]
@@ -420,10 +408,9 @@ def render_sidebar():
                     st.session_state.editing_basket  = None
                     st.rerun()
 
-        st.divider()
-
-        # Config export / import
-        st.markdown('<div style="font-size:9px;font-weight:700;color:#64748b;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:8px">Config</div>', unsafe_allow_html=True)
+    # ── RIGHT COLUMN: Config export / import ──
+    with col_right:
+        st.markdown('<div style="font-size:11px;font-weight:700;color:#64748b;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:8px">Config</div>', unsafe_allow_html=True)
 
         basket_json = json.dumps(st.session_state.baskets, indent=2)
         st.download_button(
@@ -820,8 +807,6 @@ def render_momentum(stock_df: pd.DataFrame, b_stats: pd.DataFrame, z_label: str)
 
 # ── MAIN ───────────────────────────────────────────────────────────────────────
 def main():
-    render_sidebar()
-
     # Header
     col_title, col_badge = st.columns([6, 1])
     with col_title:
@@ -849,9 +834,10 @@ def main():
         return
 
     with col_badge:
+        current_time = datetime.now().strftime("%H:%M")
         st.markdown(f"""
         <div style="text-align:right;margin-top:8px">
-            <span class="live-badge">● Live · {datetime.now().strftime("%H:%M")}</span>
+            <span class="live-badge">● Live · {current_time}</span>
         </div>
         """, unsafe_allow_html=True)
 
@@ -863,8 +849,8 @@ def main():
     render_basket_cards(b_stats)
     st.markdown("<div style='height:24px'/>", unsafe_allow_html=True)
 
-    # Tabs
-    tab_ov, tab_rot, tab_mom = st.tabs(["Overview", "Rotation Map", "Momentum Ranks"])
+    # Tabs (Settings added as last tab)
+    tab_ov, tab_rot, tab_mom, tab_settings = st.tabs(["Overview", "Rotation Map", "Momentum Ranks", "⚙ Settings"])
 
     with tab_ov:
         render_overview(b_stats, stock_df, z_window, z_label)
@@ -874,6 +860,9 @@ def main():
 
     with tab_mom:
         render_momentum(stock_df, b_stats, z_label)
+
+    with tab_settings:
+        render_settings()
 
 
 if __name__ == "__main__":
