@@ -114,7 +114,7 @@ hr { border-color: #1e293b !important; }
 }
 .live-badge {
     display: inline-flex; align-items: center; gap: 6px;
-    background: #052010; border: 1px solid #10b98133;
+    background: #052010; border: 1px solid rgba(16,185,129,0.2);
     border-radius: 5px; padding: 4px 12px;
     font-size: 11px; color: #10b981; font-weight: 700;
 }
@@ -283,10 +283,10 @@ def signal_html(z):
     if z is None:
         return '<span style="color:#334155;font-size:10px">—</span>'
     if z > 1.5:
-        return '<span style="color:#10b981;font-weight:700;font-size:10px;border:1px solid #10b98155;border-radius:3px;padding:2px 6px">ACCEL</span>'
+        return '<span style="color:#10b981;font-weight:700;font-size:10px;border:1px solid rgba(16,185,129,0.33);border-radius:3px;padding:2px 6px">ACCEL</span>'
     if z < -1.5:
-        return '<span style="color:#ef4444;font-weight:700;font-size:10px;border:1px solid #ef444455;border-radius:3px;padding:2px 6px">FADE</span>'
-    return '<span style="color:#64748b;font-weight:700;font-size:10px;border:1px solid #64748b55;border-radius:3px;padding:2px 6px">NEUTRAL</span>'
+        return '<span style="color:#ef4444;font-weight:700;font-size:10px;border:1px solid rgba(239,68,68,0.33);border-radius:3px;padding:2px 6px">FADE</span>'
+    return '<span style="color:#64748b;font-weight:700;font-size:10px;border:1px solid rgba(100,116,139,0.33);border-radius:3px;padding:2px 6px">NEUTRAL</span>'
 
 
 # ── PLOTLY THEME ───────────────────────────────────────────────────────────────
@@ -463,7 +463,7 @@ def render_basket_cards(b_stats: pd.DataFrame):
                 padding:14px 16px;cursor:pointer;position:relative;overflow:hidden;
             ">
                 <div style="font-size:12px;font-weight:700;color:#e2e8f0;margin-bottom:6px">{row["basket"]}</div>
-                <div style="display:inline-block;background:{color}22;color:{color};border:1px solid {color}44;border-radius:3px;padding:1px 7px;font-size:9px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:10px">{row["n"]} stocks</div>
+                <div style="display:inline-block;background:rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},0.13);color:{color};border:1px solid rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},0.27);border-radius:3px;padding:1px 7px;font-size:9px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:10px">{row["n"]} stocks</div>
                 <div style="display:flex;justify-content:space-between;margin-bottom:6px">
                     <div><div style="font-size:9px;color:#475569;margin-bottom:2px">5D</div>{pct_html(avg5d, 13)}</div>
                     <div style="text-align:right"><div style="font-size:9px;color:#475569;margin-bottom:2px">20D</div>{pct_html(avg20d, 13)}</div>
@@ -472,7 +472,7 @@ def render_basket_cards(b_stats: pd.DataFrame):
                     <div><div style="font-size:9px;color:#475569;margin-bottom:2px">Δ</div>{pct_html(delta, 11)}</div>
                 </div>
                 <div style="height:2px;background:#1e293b;border-radius:2px">
-                    <div style="height:100%;width:{bar_w}%;background:linear-gradient(90deg,{color}55,{color});border-radius:2px"></div>
+                    <div style="height:100%;width:{bar_w}%;background:linear-gradient(90deg,rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},0.33),{color});border-radius:2px"></div>
                 </div>
             </div>
             """, unsafe_allow_html=True)
@@ -744,7 +744,7 @@ def render_momentum(stock_df: pd.DataFrame, b_stats: pd.DataFrame, z_label: str)
                     <div style="position:absolute;{bar_dir}:0;top:0;bottom:0;width:{bar_w}%;background:{bar_color};opacity:0.7;border-radius:2px"></div>
                 </div>
                 {z_html(val)}
-                <span style="background:{color}22;color:{color};border:1px solid {color}44;border-radius:3px;padding:1px 6px;font-size:9px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase">{row["basket"][:6]}</span>
+                <span style="background:rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},0.13);color:{color};border:1px solid rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},0.27);border-radius:3px;padding:1px 6px;font-size:9px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase">{row["basket"][:6]}</span>
             </div>"""
         return rows
 
