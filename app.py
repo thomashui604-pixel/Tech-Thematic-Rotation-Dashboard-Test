@@ -230,14 +230,16 @@ def build_stock_stats(prices_df: pd.DataFrame, baskets: dict, z_window: int) -> 
             "ticker":  ticker,
             "basket":  primary.get(ticker, "Other"),
             "price":   round(float(s.iloc[-1]), 2),
+            "ret1d":   round(ret_pct(s, 1),  2),
             "ret5d":   round(ret_pct(s, 5),  2),
             "ret20d":  round(ret_pct(s, 20), 2),
+            "z1d":     rolling_zscore(s, 1,  z_window),
             "z5d":     rolling_zscore(s, 5,  z_window),
             "z20d":    rolling_zscore(s, 20, z_window),
         })
 
     return pd.DataFrame(rows) if rows else pd.DataFrame(
-        columns=["ticker","basket","price","ret5d","ret20d","z5d","z20d"]
+        columns=["ticker","basket","price","ret1d","ret5d","ret20d","z1d","z5d","z20d"]
     )
 
 
@@ -249,16 +251,19 @@ def basket_stats(baskets: dict, stock_df: pd.DataFrame) -> pd.DataFrame:
         if members.empty:
             rows.append({"basket": name, "color": cfg["color"],
                          "tickers": cfg["tickers"], "n": 0,
-                         "avg5d": 0, "avg20d": 0, "avgZ5d": 0, "avgZ20d": 0})
+                         "avg1d": 0, "avg5d": 0, "avg20d": 0,
+                         "avgZ1d": 0, "avgZ5d": 0, "avgZ20d": 0})
             continue
-        z_rows  = members.dropna(subset=["z5d","z20d"])
+        z_rows  = members.dropna(subset=["z1d","z5d","z20d"])
         rows.append({
             "basket":  name,
             "color":   cfg["color"],
             "tickers": cfg["tickers"],
             "n":       len(members),
+            "avg1d":   round(members["ret1d"].mean(),  2),
             "avg5d":   round(members["ret5d"].mean(),  2),
             "avg20d":  round(members["ret20d"].mean(), 2),
+            "avgZ1d":  round(z_rows["z1d"].mean(),  3) if not z_rows.empty else 0,
             "avgZ5d":  round(z_rows["z5d"].mean(),  3) if not z_rows.empty else 0,
             "avgZ20d": round(z_rows["z20d"].mean(), 3) if not z_rows.empty else 0,
         })
@@ -447,6 +452,7 @@ def render_basket_cards(b_stats: pd.DataFrame):
         if i >= len(cols):
             break
         color  = row["color"]
+        avg1d  = row["avg1d"]
         avg5d  = row["avg5d"]
         avg20d = row["avg20d"]
         delta  = avg5d - avg20d
@@ -465,7 +471,8 @@ def render_basket_cards(b_stats: pd.DataFrame):
                 <div style="font-size:12px;font-weight:700;color:#e2e8f0;margin-bottom:6px">{row["basket"]}</div>
                 <div style="display:inline-block;background:rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},0.13);color:{color};border:1px solid rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},0.27);border-radius:3px;padding:1px 7px;font-size:9px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:10px">{row["n"]} stocks</div>
                 <div style="display:flex;justify-content:space-between;margin-bottom:6px">
-                    <div><div style="font-size:9px;color:#475569;margin-bottom:2px">5D</div>{pct_html(avg5d, 13)}</div>
+                    <div><div style="font-size:9px;color:#475569;margin-bottom:2px">1D</div>{pct_html(avg1d, 13)}</div>
+                    <div style="text-align:center"><div style="font-size:9px;color:#475569;margin-bottom:2px">5D</div>{pct_html(avg5d, 13)}</div>
                     <div style="text-align:right"><div style="font-size:9px;color:#475569;margin-bottom:2px">20D</div>{pct_html(avg20d, 13)}</div>
                 </div>
                 <div style="display:flex;justify-content:space-between;margin-bottom:8px">
@@ -508,7 +515,8 @@ def render_overview(b_stats: pd.DataFrame, stock_df: pd.DataFrame, z_window: int
     """, unsafe_allow_html=True)
 
     # Summary tiles
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    z1  = b_row["avgZ1d"]
     z5  = b_row["avgZ5d"]
     z20 = b_row["avgZ20d"]
     breadth = 0.0
@@ -516,10 +524,12 @@ def render_overview(b_stats: pd.DataFrame, stock_df: pd.DataFrame, z_window: int
     if not members.empty:
         breadth = (members["ret5d"] > 0).sum() / len(members) * 100
 
-    c1.metric("Avg 5d Return",  f"{'+'if b_row['avg5d']>=0 else ''}{b_row['avg5d']:.2f}%")
-    c2.metric("Avg 20d Return", f"{'+'if b_row['avg20d']>=0 else ''}{b_row['avg20d']:.2f}%")
-    c3.metric(f"5d z ({z_label.split()[0]})",  f"{'+'if z5>=0 else ''}{z5:.2f}σ")
-    c4.metric(f"20d z ({z_label.split()[0]})", f"{'+'if z20>=0 else ''}{z20:.2f}σ")
+    c1.metric("Avg 1d Return",  f"{'+'if b_row['avg1d']>=0 else ''}{b_row['avg1d']:.2f}%")
+    c2.metric("Avg 5d Return",  f"{'+'if b_row['avg5d']>=0 else ''}{b_row['avg5d']:.2f}%")
+    c3.metric("Avg 20d Return", f"{'+'if b_row['avg20d']>=0 else ''}{b_row['avg20d']:.2f}%")
+    c4.metric(f"1d z ({z_label.split()[0]})",  f"{'+'if z1>=0 else ''}{z1:.2f}σ")
+    c5.metric(f"5d z ({z_label.split()[0]})",  f"{'+'if z5>=0 else ''}{z5:.2f}σ")
+    c6.metric(f"20d z ({z_label.split()[0]})", f"{'+'if z20>=0 else ''}{z20:.2f}σ")
 
     st.markdown("<div style='height:16px'/>", unsafe_allow_html=True)
 
@@ -534,8 +544,10 @@ def render_overview(b_stats: pd.DataFrame, stock_df: pd.DataFrame, z_window: int
         <tr style="border-bottom:1px solid #0f172a">
             <td style="padding:8px 14px;font-weight:700;color:#e2e8f0;font-family:'IBM Plex Mono',monospace">{row["ticker"]}</td>
             <td style="padding:8px 14px;text-align:right;color:#94a3b8;font-family:'IBM Plex Mono',monospace">${row["price"]:.2f}</td>
+            <td style="padding:8px 14px;text-align:right">{pct_html(row["ret1d"])}</td>
             <td style="padding:8px 14px;text-align:right">{pct_html(row["ret5d"])}</td>
             <td style="padding:8px 14px;text-align:right">{pct_html(row["ret20d"])}</td>
+            <td style="padding:8px 14px;text-align:right">{z_html(row["z1d"])}</td>
             <td style="padding:8px 14px;text-align:right">{z_html(row["z5d"])}</td>
             <td style="padding:8px 14px;text-align:right">{z_html(row["z20d"])}</td>
             <td style="padding:8px 14px;text-align:right">{signal_html(row["z5d"])}</td>
@@ -548,8 +560,10 @@ def render_overview(b_stats: pd.DataFrame, stock_df: pd.DataFrame, z_window: int
                 <tr style="border-bottom:1px solid #1e293b">
                     <th style="text-align:left;padding:8px 14px;font-size:10px;font-weight:700;color:#475569;letter-spacing:0.08em;text-transform:uppercase">Ticker</th>
                     <th style="text-align:right;padding:8px 14px;font-size:10px;font-weight:700;color:#475569;letter-spacing:0.08em;text-transform:uppercase">Price</th>
+                    <th style="text-align:right;padding:8px 14px;font-size:10px;font-weight:700;color:#475569;letter-spacing:0.08em;text-transform:uppercase">1d %</th>
                     <th style="text-align:right;padding:8px 14px;font-size:10px;font-weight:700;color:#475569;letter-spacing:0.08em;text-transform:uppercase">5d %</th>
                     <th style="text-align:right;padding:8px 14px;font-size:10px;font-weight:700;color:#475569;letter-spacing:0.08em;text-transform:uppercase">20d %</th>
+                    <th style="text-align:right;padding:8px 14px;font-size:10px;font-weight:700;color:#475569;letter-spacing:0.08em;text-transform:uppercase">1d σ</th>
                     <th style="text-align:right;padding:8px 14px;font-size:10px;font-weight:700;color:#475569;letter-spacing:0.08em;text-transform:uppercase">5d σ</th>
                     <th style="text-align:right;padding:8px 14px;font-size:10px;font-weight:700;color:#475569;letter-spacing:0.08em;text-transform:uppercase">20d σ</th>
                     <th style="text-align:right;padding:8px 14px;font-size:10px;font-weight:700;color:#475569;letter-spacing:0.08em;text-transform:uppercase">Signal</th>
@@ -685,8 +699,10 @@ def render_rotation(b_stats: pd.DataFrame, z_label: str):
                     </div>
                 </div>
             </td>
+            <td style="padding:10px 14px;text-align:right"><div style="font-size:9px;color:#475569">1d σ</div>{z_html(row["avgZ1d"])}</td>
             <td style="padding:10px 14px;text-align:right"><div style="font-size:9px;color:#475569">5d σ</div>{z_html(row["avgZ5d"])}</td>
             <td style="padding:10px 14px;text-align:right"><div style="font-size:9px;color:#475569">20d σ</div>{z_html(row["avgZ20d"])}</td>
+            <td style="padding:10px 14px;text-align:right"><div style="font-size:9px;color:#475569">Raw 1d</div>{pct_html(row["avg1d"])}</td>
             <td style="padding:10px 14px;text-align:right"><div style="font-size:9px;color:#475569">Raw 5d</div>{pct_html(row["avg5d"])}</td>
             <td style="padding:10px 14px;text-align:right"><div style="font-size:9px;color:#475569">Raw 20d</div>{pct_html(row["avg20d"])}</td>
             <td style="padding:10px 14px;text-align:right">
@@ -715,10 +731,10 @@ def render_momentum(stock_df: pd.DataFrame, b_stats: pd.DataFrame, z_label: str)
         <div style="font-size:11px;color:#475569;margin-left:13px">Z-scores — apples-to-apples across vol regimes</div>
         """, unsafe_allow_html=True)
     with col_mode:
-        mode = st.radio("Mode", ["5d", "20d"], horizontal=True, key="mom_mode", label_visibility="collapsed")
+        mode = st.radio("Mode", ["1d", "5d", "20d"], horizontal=True, key="mom_mode", label_visibility="collapsed")
 
-    z_col    = "z5d" if mode == "5d" else "z20d"
-    ret_col  = "ret5d" if mode == "5d" else "ret20d"
+    z_col    = "z1d" if mode == "1d" else ("z5d" if mode == "5d" else "z20d")
+    ret_col  = "ret1d" if mode == "1d" else ("ret5d" if mode == "5d" else "ret20d")
     valid_df = stock_df.dropna(subset=[z_col]).sort_values(z_col, ascending=False)
 
     if valid_df.empty:
@@ -769,13 +785,18 @@ def render_momentum(stock_df: pd.DataFrame, b_stats: pd.DataFrame, z_label: str)
     # Basket comparison bar chart
     st.markdown(f"""
     <div style="font-size:9px;font-weight:700;color:#94a3b8;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:12px">
-        Basket 5d vs 20d z-score &nbsp;·&nbsp; <span style="color:#334155;font-family:monospace">window: {z_label.split("(")[0].strip()}</span>
+        Basket 1d vs 5d vs 20d z-score &nbsp;·&nbsp; <span style="color:#334155;font-family:monospace">window: {z_label.split("(")[0].strip()}</span>
     </div>
     """, unsafe_allow_html=True)
 
     fig = go.Figure()
     basket_names = b_stats["basket"].tolist()
 
+    fig.add_trace(go.Bar(
+        name="1d σ", x=basket_names, y=b_stats["avgZ1d"].tolist(),
+        marker=dict(color="#06b6d4", line=dict(width=0)),
+        hovertemplate="%{x}<br>1d σ: %{y:.2f}<extra></extra>",
+    ))
     fig.add_trace(go.Bar(
         name="5d σ", x=basket_names, y=b_stats["avgZ5d"].tolist(),
         marker=dict(color="#3b82f6", line=dict(width=0)),
