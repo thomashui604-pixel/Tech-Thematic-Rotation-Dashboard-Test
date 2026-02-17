@@ -782,48 +782,41 @@ def render_momentum(stock_df: pd.DataFrame, b_stats: pd.DataFrame, z_label: str)
 
     st.markdown("<div style='height:20px'/>", unsafe_allow_html=True)
 
-    # Basket comparison bar chart
+    # Basket z-score ranks (same style as top/bottom panels)
     st.markdown(f"""
     <div style="font-size:9px;font-weight:700;color:#94a3b8;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:12px">
-        Basket 1d vs 5d vs 20d z-score &nbsp;·&nbsp; <span style="color:#334155;font-family:monospace">window: {z_label.split("(")[0].strip()}</span>
+        Basket z-scores ({mode}) &nbsp;·&nbsp; <span style="color:#334155;font-family:monospace">window: {z_label.split("(")[0].strip()}</span>
     </div>
     """, unsafe_allow_html=True)
 
-    fig = go.Figure()
-    basket_names = b_stats["basket"].tolist()
+    bz_col = "avgZ1d" if mode == "1d" else ("avgZ5d" if mode == "5d" else "avgZ20d")
+    sorted_baskets = b_stats.sort_values(bz_col, ascending=False)
 
-    fig.add_trace(go.Bar(
-        name="1d σ", x=basket_names, y=b_stats["avgZ1d"].tolist(),
-        marker=dict(color="#06b6d4", line=dict(width=0)),
-        hovertemplate="%{x}<br>1d σ: %{y:.2f}<extra></extra>",
-    ))
-    fig.add_trace(go.Bar(
-        name="5d σ", x=basket_names, y=b_stats["avgZ5d"].tolist(),
-        marker=dict(color="#3b82f6", line=dict(width=0)),
-        hovertemplate="%{x}<br>5d σ: %{y:.2f}<extra></extra>",
-    ))
-    fig.add_trace(go.Bar(
-        name="20d σ", x=basket_names, y=b_stats["avgZ20d"].tolist(),
-        marker=dict(color="#6366f1", opacity=0.7, line=dict(width=0)),
-        hovertemplate="%{x}<br>20d σ: %{y:.2f}<extra></extra>",
-    ))
+    basket_rows = ""
+    for rank, (_, row) in enumerate(sorted_baskets.iterrows(), 1):
+        val   = row[bz_col]
+        color = row["color"]
+        is_pos = val >= 0
+        bar_w = min(100, abs(val) * 28)
+        bar_color = "#10b981" if is_pos else "#ef4444"
+        bar_dir   = "left" if is_pos else "right"
+        basket_rows += f"""
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+            <span style="width:16px;font-size:9px;color:#475569;font-family:'IBM Plex Mono',monospace;text-align:right">{rank}</span>
+            <span style="width:4px;height:24px;background:{color};border-radius:2px;flex-shrink:0"></span>
+            <span style="width:110px;font-size:11px;font-weight:700;color:#e2e8f0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{row["basket"]}</span>
+            <div style="flex:1;background:#0f172a;border-radius:2px;height:14px;position:relative;overflow:hidden">
+                <div style="position:absolute;{bar_dir}:0;top:0;bottom:0;width:{bar_w}%;background:{bar_color};opacity:0.7;border-radius:2px"></div>
+            </div>
+            {z_html(val)}
+        </div>"""
 
-    layout = dict(**PLOTLY_LAYOUT)
-    layout.update(
-        height=260, barmode="group",
-        yaxis=dict(**PLOTLY_LAYOUT["yaxis"],
-            title=dict(text="z-score (σ)", font=dict(color="#475569", size=10))),
-        shapes=[
-            dict(type="line", x0=-0.5, x1=len(basket_names)-0.5, y0=1,  y1=1,  line=dict(color="#1e293b", dash="dot", width=1)),
-            dict(type="line", x0=-0.5, x1=len(basket_names)-0.5, y0=-1, y1=-1, line=dict(color="#1e293b", dash="dot", width=1)),
-        ],
-        annotations=[
-            dict(x=len(basket_names)-0.5, y=1,  text="+1σ", showarrow=False, font=dict(color="#334155", size=9), xanchor="right"),
-            dict(x=len(basket_names)-0.5, y=-1, text="-1σ", showarrow=False, font=dict(color="#334155", size=9), xanchor="right"),
-        ],
-    )
-    fig.update_layout(**layout)
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.html(f"""
+    <div style="background:#080f1a;border:1px solid #1e293b;border-radius:8px;padding:20px">
+        <div style="font-size:10px;font-weight:700;color:#f59e0b;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:14px">Basket z-score ({mode})</div>
+        {basket_rows}
+    </div>
+    """)
 
 
 # ── MAIN ───────────────────────────────────────────────────────────────────────
