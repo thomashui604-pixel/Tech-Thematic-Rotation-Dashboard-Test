@@ -643,7 +643,7 @@ def render_rotation(b_stats: pd.DataFrame, z_label: str):
             textfont=dict(color=color, size=9, family="IBM Plex Mono"),
             marker=dict(
                 size=48,
-                color=color + "22",
+                color=f"rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},0.13)",
                 line=dict(color=color, width=1.5),
             ),
             hovertemplate=(
