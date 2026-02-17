@@ -379,6 +379,7 @@ def render_settings():
                     name_clean    = new_name.strip()
                     ticker_list   = [t.strip().upper() for t in tickers_raw.replace("\n", ",").split(",") if t.strip()]
                     ticker_unique = list(dict.fromkeys(ticker_list))
+                    dupes_removed = len(ticker_list) - len(ticker_unique)
 
                     if not name_clean:
                         st.error("Name is required")
@@ -387,6 +388,8 @@ def render_settings():
                     elif is_new and name_clean in st.session_state.baskets:
                         st.error("Name already exists")
                     else:
+                        if dupes_removed:
+                            st.warning(f"Removed {dupes_removed} duplicate ticker{'s' if dupes_removed > 1 else ''}")
                         if not is_new and editing != name_clean:
                             old_data = st.session_state.baskets.pop(editing)
                             if st.session_state.selected_basket == editing:
@@ -436,6 +439,68 @@ def render_settings():
                 st.rerun()
             except Exception as e:
                 st.error(f"Invalid file: {e}")
+
+        # ── Ticker Diagnostics ──
+        st.markdown("<div style='height:24px'/>", unsafe_allow_html=True)
+        st.markdown('<div style="font-size:11px;font-weight:700;color:#64748b;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:10px">Ticker Diagnostics</div>', unsafe_allow_html=True)
+
+        baskets = st.session_state.baskets
+        has_issues = False
+        diag_html = ""
+
+        # Check for duplicates within a single basket
+        for name, cfg in baskets.items():
+            seen = {}
+            for t in cfg["tickers"]:
+                seen[t] = seen.get(t, 0) + 1
+            dupes = {t: c for t, c in seen.items() if c > 1}
+            if dupes:
+                has_issues = True
+                color = cfg.get("color", "#64748b")
+                for t, c in dupes.items():
+                    diag_html += f"""
+                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+                        <span style="color:#ef4444;font-size:12px;font-weight:900">✕</span>
+                        <span style="font-size:11px;color:#e2e8f0;font-family:'IBM Plex Mono',monospace;font-weight:700">{t}</span>
+                        <span style="font-size:10px;color:#94a3b8">repeated {c}× in</span>
+                        <span style="background:rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},0.13);color:{color};border:1px solid rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},0.27);border-radius:3px;padding:1px 6px;font-size:9px;font-weight:700">{name}</span>
+                    </div>"""
+
+        # Check for tickers shared across baskets
+        ticker_to_baskets = {}
+        for name, cfg in baskets.items():
+            for t in set(cfg["tickers"]):
+                ticker_to_baskets.setdefault(t, []).append(name)
+        cross_dupes = {t: bs for t, bs in ticker_to_baskets.items() if len(bs) > 1}
+
+        if cross_dupes:
+            has_issues = True
+            for t, bs in sorted(cross_dupes.items()):
+                tags = ""
+                for b in bs:
+                    color = baskets[b].get("color", "#64748b")
+                    tags += f'<span style="background:rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},0.13);color:{color};border:1px solid rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},0.27);border-radius:3px;padding:1px 6px;font-size:9px;font-weight:700">{b}</span> '
+                diag_html += f"""
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+                    <span style="color:#f59e0b;font-size:12px;font-weight:900">⚠</span>
+                    <span style="font-size:11px;color:#e2e8f0;font-family:'IBM Plex Mono',monospace;font-weight:700">{t}</span>
+                    <span style="font-size:10px;color:#94a3b8">appears in {len(bs)} baskets:</span>
+                    {tags}
+                </div>"""
+
+        if has_issues:
+            st.html(f"""
+            <div style="background:#080f1a;border:1px solid #1e293b;border-radius:8px;padding:16px">
+                {diag_html}
+            </div>
+            """)
+        else:
+            st.html("""
+            <div style="background:#080f1a;border:1px solid #1e293b;border-radius:8px;padding:16px;display:flex;align-items:center;gap:8px">
+                <span style="color:#10b981;font-size:12px;font-weight:900">✓</span>
+                <span style="font-size:11px;color:#10b981;font-weight:600">All clean — no duplicate tickers found</span>
+            </div>
+            """)
 
 
 # ── BASKET CARDS ROW ───────────────────────────────────────────────────────────
