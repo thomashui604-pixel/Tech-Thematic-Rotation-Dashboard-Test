@@ -99,10 +99,6 @@ h1, h2, h3, p, div { color: #e2e8f0; }
 /* Divider */
 hr { border-color: #1e293b !important; }
 
-/* Prevent sidebar from collapsing */
-[data-testid="collapsedControl"] { display: none !important; }
-[data-testid="stSidebar"] { min-width: 280px !important; max-width: 280px !important; }
-
 /* Remove default padding */
 .block-container { padding-top: 1.5rem; padding-bottom: 2rem; }
 
