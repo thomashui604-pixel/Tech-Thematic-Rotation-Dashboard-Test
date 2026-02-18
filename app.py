@@ -919,17 +919,12 @@ def render_momentum(stock_df: pd.DataFrame, b_stats: pd.DataFrame, z_label: str)
     </div>
     """)
 
-
 # ── CORRELATION TAB ────────────────────────────────────────────────────────────
 def plot_heatmap(corr_df: pd.DataFrame, title: str):
     """Generates a styled Plotly heatmap for correlations."""
-    # Mask the upper triangle (optional, but cleaner for symmetric matrices)
     mask = np.triu(np.ones_like(corr_df, dtype=bool), k=1)
-
-    # Custom text for the cells (only show 2 decimal places)
     text = np.around(corr_df.values, 2).astype(str)
-
-    # Create Heatmap
+    
     fig = go.Figure(data=go.Heatmap(
         z=corr_df.values,
         x=corr_df.columns,
@@ -937,7 +932,7 @@ def plot_heatmap(corr_df: pd.DataFrame, title: str):
         text=text,
         texttemplate="%{text}",
         textfont={"size": 10, "color": "#e2e8f0"},
-        colorscale="RdBu",  # Red (neg) to Blue (pos)
+        colorscale="RdBu",  
         zmin=-1, zmax=1,
         showscale=False,
         xgap=1, ygap=1,
@@ -946,82 +941,160 @@ def plot_heatmap(corr_df: pd.DataFrame, title: str):
     layout = dict(**PLOTLY_LAYOUT)
     layout.update(
         title=dict(text=title, font=dict(color="#e2e8f0", size=14)),
-        height=500 + (len(corr_df) * 15), # dynamic height
+        height=500 + (len(corr_df) * 15), 
         xaxis=dict(**PLOTLY_LAYOUT["xaxis"], side="bottom"),
-        yaxis=dict(**PLOTLY_LAYOUT["yaxis"], autorange="reversed"), # Top-to-bottom
+        yaxis=dict(**PLOTLY_LAYOUT["yaxis"], autorange="reversed"),
     )
     fig.update_layout(**layout)
     return fig
 
 def render_correlations(prices_df: pd.DataFrame, baskets: dict):
     sel = st.session_state.selected_basket
-
-    # Calculate daily returns for all stocks
+    
+    # Calculate daily returns
     returns_df = prices_df.pct_change().dropna()
-
-    # ── 1. CROSS-BASKET CORRELATION ──
-    # Construct a dataframe of Basket Returns (Equal-Weighted)
+    
+    # Construct Basket Returns (Equal-Weighted)
     basket_returns = {}
     for name, cfg in baskets.items():
         tickers = [t for t in cfg["tickers"] if t in returns_df.columns]
         if tickers:
-            # Mean return of the constituents for that day
             basket_returns[name] = returns_df[tickers].mean(axis=1)
-
+    
     basket_ret_df = pd.DataFrame(basket_returns)
-
+    
     if basket_ret_df.empty:
         st.info("Insufficient data for correlation analysis.")
         return
 
-    # Lookback window slider
+    # ── CONTROLS ──
     col_ctrl, _ = st.columns([2, 3])
     with col_ctrl:
         lookback = st.select_slider(
-            "Correlation Lookback",
+            "Snapshot Lookback (Matrix)",
             options=[20, 60, 120, 252],
             value=60,
             format_func=lambda x: f"{x} Days"
         )
 
-    # Filter for the lookback window
+    # ── MATRICES ──
     recent_basket_ret = basket_ret_df.tail(lookback)
     basket_corr = recent_basket_ret.corr()
 
-    # ── 2. WITHIN-BASKET CORRELATION ──
-    # Get constituents of the currently selected basket
     sel_tickers = [t for t in baskets[sel]["tickers"] if t in returns_df.columns]
-
     if len(sel_tickers) < 2:
-        st.warning(f"Need at least 2 tickers in '{sel}' to calculate correlations.")
         stock_corr = pd.DataFrame()
     else:
         recent_stock_ret = returns_df[sel_tickers].tail(lookback)
         stock_corr = recent_stock_ret.corr()
 
-    # ── RENDER ──
     col1, col2 = st.columns(2)
-
     with col1:
         st.markdown(f'<div style="font-size:12px;font-weight:700;color:#94a3b8;margin-bottom:8px">THEME CORRELATIONS ({lookback}d)</div>', unsafe_allow_html=True)
         if not basket_corr.empty:
-            fig_b = plot_heatmap(basket_corr, "Cross-Basket Matrix")
-            st.plotly_chart(fig_b, use_container_width=True)
-
+            st.plotly_chart(plot_heatmap(basket_corr, "Cross-Basket Matrix"), use_container_width=True)
+            
     with col2:
         st.markdown(f'<div style="font-size:12px;font-weight:700;color:#94a3b8;margin-bottom:8px">{sel.upper()} CONSTITUENTS ({lookback}d)</div>', unsafe_allow_html=True)
         if not stock_corr.empty:
-            fig_s = plot_heatmap(stock_corr, "Constituent Matrix")
-            st.plotly_chart(fig_s, use_container_width=True)
+            st.plotly_chart(plot_heatmap(stock_corr, "Constituent Matrix"), use_container_width=True)
 
-    # Insight block
-    st.markdown("""
-    <div class="info-box">
-        <strong style="color:#f59e0b">Interpret this:</strong> High correlation (>0.8) implies the basket trades as a single macro factor.
-        Low or negative correlation between baskets suggests true diversification benefits.
+    st.markdown("<div style='height:32px'/>", unsafe_allow_html=True)
+    st.divider()
+
+    # ── ROLLING CORRELATION ANALYSIS ──
+    st.markdown(f"""
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+        <div style="width:3px;height:20px;background:#f59e0b;border-radius:2px"></div>
+        <span style="font-size:13px;font-weight:700;color:#e2e8f0">Rolling Correlation History</span>
+    </div>
+    <div style="font-size:11px;color:#475569;margin-left:13px;margin-bottom:20px">Analyze stability of relationships over time</div>
+    """, unsafe_allow_html=True)
+
+    if sel not in basket_ret_df.columns:
+        return
+
+    # Setup comparison options
+    other_baskets = [b for b in basket_ret_df.columns if b != sel]
+    constituents  = sel_tickers
+    
+    # User Controls for Rolling Plot
+    rc1, rc2, rc3 = st.columns([1, 1, 2])
+    with rc1:
+        roll_target = st.selectbox("Compare Selected Basket vs...", ["Other Baskets", "Constituents"])
+    
+    with rc2:
+        if roll_target == "Other Baskets":
+            compare_to = st.selectbox("Select Target", other_baskets)
+        else:
+            compare_to = st.selectbox("Select Target", constituents)
+            
+    with rc3:
+        roll_window = st.slider("Rolling Window (Trading Days)", 10, 252, 63)
+
+    # Computation
+    series_a = basket_ret_df[sel]
+    
+    if roll_target == "Other Baskets":
+        series_b = basket_ret_df[compare_to]
+        line_color = baskets[compare_to].get("color", "#cbd5e1")
+    else:
+        series_b = returns_df[compare_to]
+        line_color = "#cbd5e1" # default for stock
+
+    # Calculate Rolling Correlation
+    rolling_corr = series_a.rolling(window=roll_window).corr(series_b).dropna()
+
+    # Plot
+    fig_roll = go.Figure()
+    
+    # Add zero line
+    fig_roll.add_hline(y=0, line=dict(color="#334155", width=1, dash="dash"))
+    fig_roll.add_hline(y=0.8, line=dict(color="#1e293b", width=1, dash="dot"))
+    fig_roll.add_hline(y=-0.8, line=dict(color="#1e293b", width=1, dash="dot"))
+
+    fig_roll.add_trace(go.Scatter(
+        x=rolling_corr.index,
+        y=rolling_corr.values,
+        mode="lines",
+        name=f"Corr({sel}, {compare_to})",
+        line=dict(color=line_color, width=2)
+    ))
+
+    layout_roll = dict(**PLOTLY_LAYOUT)
+    layout_roll.update(
+        height=350,
+        yaxis=dict(
+            range=[-1.1, 1.1],
+            gridcolor="#1e293b",
+            zeroline=False,
+            title=dict(text="Correlation Coefficient", font=dict(size=10, color="#64748b"))
+        ),
+        xaxis=dict(
+            title=dict(text=f"Date ({roll_window}d Rolling Window)", font=dict(size=10, color="#64748b"))
+        ),
+        margin=dict(l=50, r=20, t=20, b=40),
+        showlegend=True
+    )
+    fig_roll.update_layout(**layout_roll)
+    
+    st.plotly_chart(fig_roll, use_container_width=True)
+    
+    # Stats row
+    latest_corr = rolling_corr.iloc[-1] if not rolling_corr.empty else 0
+    avg_corr    = rolling_corr.mean()
+    min_corr    = rolling_corr.min()
+    max_corr    = rolling_corr.max()
+    
+    st.markdown(f"""
+    <div style="display:flex;gap:24px;background:#080f1a;border:1px solid #1e293b;padding:12px 20px;border-radius:6px;font-family:'IBM Plex Mono',monospace;font-size:11px">
+        <div><span style="color:#64748b">Current:</span> <span style="color:#e2e8f0;font-weight:700">{latest_corr:.2f}</span></div>
+        <div><span style="color:#64748b">Average:</span> <span style="color:#e2e8f0;font-weight:700">{avg_corr:.2f}</span></div>
+        <div><span style="color:#64748b">Range:</span> <span style="color:#e2e8f0;font-weight:700">{min_corr:.2f}</span> to <span style="color:#e2e8f0;font-weight:700">{max_corr:.2f}</span></div>
     </div>
     """, unsafe_allow_html=True)
 
+# ... (keep main() and rest of file below)
 
 # ── MAIN ───────────────────────────────────────────────────────────────────────
 def main():
