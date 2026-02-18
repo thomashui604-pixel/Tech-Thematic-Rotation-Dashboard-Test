@@ -45,8 +45,8 @@ Z_WINDOWS = {
     "504d (Biennial)":    504,
 }
 
-FETCH_PERIOD = "5y"  # needs ~504 trading days for longest z-window
-
+# CHANGED: Increased from "2y" to "5y" to allow longer rolling correlation history
+FETCH_PERIOD = "5y"  
 
 # ── CUSTOM CSS ─────────────────────────────────────────────────────────────────
 st.markdown("""
