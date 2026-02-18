@@ -590,6 +590,8 @@ def render_basket_cards(b_stats: pd.DataFrame):
                 st.rerun()
 
 
+# ... inside app.py ...
+
 # ── OVERVIEW TAB ───────────────────────────────────────────────────────────────
 def render_overview(b_stats: pd.DataFrame, stock_df: pd.DataFrame, z_window: int, z_label: str):
     sel = st.session_state.selected_basket
@@ -603,69 +605,87 @@ def render_overview(b_stats: pd.DataFrame, stock_df: pd.DataFrame, z_window: int
         st.warning("No data yet for this basket.")
         return
     b_row = b_row.iloc[0]
-    color = cfg["color"]
 
-    st.markdown(f"""
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
-        <div style="width:3px;height:20px;background:#f59e0b;border-radius:2px"></div>
-        <span style="font-size:13px;font-weight:700;color:#e2e8f0">{sel}</span>
-        <span style="font-size:11px;color:#475569">· {b_row["n"]} constituents · z-window: {z_label}</span>
-    </div>
-    """, unsafe_allow_html=True)
+    # ── HEADER & CONTROLS ──
+    c_title, c_toggle = st.columns([4, 1])
+    with c_title:
+        st.markdown(f"""
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+            <div style="width:3px;height:20px;background:#f59e0b;border-radius:2px"></div>
+            <span style="font-size:14px;font-weight:700;color:#e2e8f0">{sel}</span>
+            <span style="font-size:11px;color:#475569">· {b_row["n"]} constituents · z-window: {z_label}</span>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with c_toggle:
+        sig_mode = st.selectbox("Signal Horizon", ["1d", "5d", "20d"], index=1, 
+                               format_func=lambda x: f"{x} σ")
+    
+    z_col_map = {"1d": "z1d", "5d": "z5d", "20d": "z20d"}
+    target_z_col = z_col_map[sig_mode]
 
-    # Summary tiles
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-    z1  = b_row["avgZ1d"]
-    z5  = b_row["avgZ5d"]
-    z20 = b_row["avgZ20d"]
-    breadth = 0.0
+    # ── SUMMARY METRICS (Grouped) ──
+    # Group 1: Raw Performance
+    st.markdown('<div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.05em;border-bottom:1px solid #1e293b;padding-bottom:4px;margin-bottom:8px">Basket Performance (Raw %)</div>', unsafe_allow_html=True)
+    c1, c2, c3, _ = st.columns([1, 1, 1, 3])
+    c1.metric("Avg 1d %", f"{'+'if b_row['avg1d']>=0 else ''}{b_row['avg1d']:.2f}%")
+    c2.metric("Avg 5d %", f"{'+'if b_row['avg5d']>=0 else ''}{b_row['avg5d']:.2f}%")
+    c3.metric("Avg 20d %", f"{'+'if b_row['avg20d']>=0 else ''}{b_row['avg20d']:.2f}%")
+
+    st.markdown('<div style="height:12px"></div>', unsafe_allow_html=True)
+
+    # Group 2: Momentum Regime
+    st.markdown('<div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.05em;border-bottom:1px solid #1e293b;padding-bottom:4px;margin-bottom:8px">Momentum Regime (Z-Score)</div>', unsafe_allow_html=True)
+    c4, c5, c6, _ = st.columns([1, 1, 1, 3])
+    c4.metric(f"Avg 1d σ", f"{'+'if b_row['avgZ1d']>=0 else ''}{b_row['avgZ1d']:.2f}σ")
+    c5.metric(f"Avg 5d σ", f"{'+'if b_row['avgZ5d']>=0 else ''}{b_row['avgZ5d']:.2f}σ")
+    c6.metric(f"Avg 20d σ", f"{'+'if b_row['avgZ20d']>=0 else ''}{b_row['avgZ20d']:.2f}σ")
+
+    st.markdown("<div style='height:24px'/>", unsafe_allow_html=True)
+
+    # ── CONSTITUENT TABLE ──
     members = stock_df[stock_df["ticker"].isin(cfg["tickers"])]
-    if not members.empty:
-        breadth = (members["ret5d"] > 0).sum() / len(members) * 100
-
-    c1.metric("Avg 1d Return",  f"{'+'if b_row['avg1d']>=0 else ''}{b_row['avg1d']:.2f}%")
-    c2.metric("Avg 5d Return",  f"{'+'if b_row['avg5d']>=0 else ''}{b_row['avg5d']:.2f}%")
-    c3.metric("Avg 20d Return", f"{'+'if b_row['avg20d']>=0 else ''}{b_row['avg20d']:.2f}%")
-    c4.metric(f"1d z ({z_label.split()[0]})",  f"{'+'if z1>=0 else ''}{z1:.2f}σ")
-    c5.metric(f"5d z ({z_label.split()[0]})",  f"{'+'if z5>=0 else ''}{z5:.2f}σ")
-    c6.metric(f"20d z ({z_label.split()[0]})", f"{'+'if z20>=0 else ''}{z20:.2f}σ")
-
-    st.markdown("<div style='height:16px'/>", unsafe_allow_html=True)
-
-    # Constituent table
     if members.empty:
         st.info("No price data loaded yet for this basket.")
         return
 
+    # Sort table by the selected signal horizon
     rows_html = ""
-    for _, row in members.sort_values("z5d", ascending=False, na_position="last").iterrows():
+    for _, row in members.sort_values(target_z_col, ascending=False, na_position="last").iterrows():
         rows_html += f"""
         <tr style="border-bottom:1px solid #0f172a">
             <td style="padding:8px 14px;font-weight:700;color:#e2e8f0;font-family:'IBM Plex Mono',monospace">{row["ticker"]}</td>
             <td style="padding:8px 14px;text-align:right;color:#94a3b8;font-family:'IBM Plex Mono',monospace">${row["price"]:.2f}</td>
-            <td style="padding:8px 14px;text-align:right">{pct_html(row["ret1d"])}</td>
-            <td style="padding:8px 14px;text-align:right">{pct_html(row["ret5d"])}</td>
-            <td style="padding:8px 14px;text-align:right">{pct_html(row["ret20d"])}</td>
+            <td style="padding:8px 14px;text-align:right;background:rgba(255,255,255,0.015)">{pct_html(row["ret1d"])}</td>
+            <td style="padding:8px 14px;text-align:right;background:rgba(255,255,255,0.015)">{pct_html(row["ret5d"])}</td>
+            <td style="padding:8px 14px;text-align:right;background:rgba(255,255,255,0.015)">{pct_html(row["ret20d"])}</td>
             <td style="padding:8px 14px;text-align:right">{z_html(row["z1d"])}</td>
             <td style="padding:8px 14px;text-align:right">{z_html(row["z5d"])}</td>
             <td style="padding:8px 14px;text-align:right">{z_html(row["z20d"])}</td>
-            <td style="padding:8px 14px;text-align:right">{signal_html(row["z5d"])}</td>
+            <td style="padding:8px 14px;text-align:right">{signal_html(row[target_z_col])}</td>
         </tr>"""
 
     st.html(f"""
     <div style="background:#080f1a;border:1px solid #1e293b;border-radius:8px;overflow:hidden">
         <table style="width:100%;border-collapse:collapse;font-size:12px">
             <thead>
+                <tr style="border-bottom:1px solid #1e293b;background:#0f172a">
+                    <th></th>
+                    <th></th>
+                    <th colspan="3" style="text-align:center;padding:6px;font-size:9px;font-weight:700;color:#64748b;letter-spacing:0.05em;border-left:1px solid #1e293b;border-right:1px solid #1e293b">RAW RETURN %</th>
+                    <th colspan="3" style="text-align:center;padding:6px;font-size:9px;font-weight:700;color:#64748b;letter-spacing:0.05em;border-right:1px solid #1e293b">MOMENTUM REGIME (σ)</th>
+                    <th></th>
+                </tr>
                 <tr style="border-bottom:1px solid #1e293b">
                     <th style="text-align:left;padding:8px 14px;font-size:10px;font-weight:700;color:#475569;letter-spacing:0.08em;text-transform:uppercase">Ticker</th>
                     <th style="text-align:right;padding:8px 14px;font-size:10px;font-weight:700;color:#475569;letter-spacing:0.08em;text-transform:uppercase">Price</th>
-                    <th style="text-align:right;padding:8px 14px;font-size:10px;font-weight:700;color:#475569;letter-spacing:0.08em;text-transform:uppercase">1d %</th>
-                    <th style="text-align:right;padding:8px 14px;font-size:10px;font-weight:700;color:#475569;letter-spacing:0.08em;text-transform:uppercase">5d %</th>
-                    <th style="text-align:right;padding:8px 14px;font-size:10px;font-weight:700;color:#475569;letter-spacing:0.08em;text-transform:uppercase">20d %</th>
-                    <th style="text-align:right;padding:8px 14px;font-size:10px;font-weight:700;color:#475569;letter-spacing:0.08em;text-transform:uppercase">1d σ</th>
-                    <th style="text-align:right;padding:8px 14px;font-size:10px;font-weight:700;color:#475569;letter-spacing:0.08em;text-transform:uppercase">5d σ</th>
-                    <th style="text-align:right;padding:8px 14px;font-size:10px;font-weight:700;color:#475569;letter-spacing:0.08em;text-transform:uppercase">20d σ</th>
-                    <th style="text-align:right;padding:8px 14px;font-size:10px;font-weight:700;color:#475569;letter-spacing:0.08em;text-transform:uppercase">Signal</th>
+                    <th style="text-align:right;padding:8px 14px;font-size:10px;font-weight:700;color:#475569;background:rgba(255,255,255,0.015)">1D</th>
+                    <th style="text-align:right;padding:8px 14px;font-size:10px;font-weight:700;color:#475569;background:rgba(255,255,255,0.015)">5D</th>
+                    <th style="text-align:right;padding:8px 14px;font-size:10px;font-weight:700;color:#475569;background:rgba(255,255,255,0.015)">20D</th>
+                    <th style="text-align:right;padding:8px 14px;font-size:10px;font-weight:700;color:#475569">1D</th>
+                    <th style="text-align:right;padding:8px 14px;font-size:10px;font-weight:700;color:#475569">5D</th>
+                    <th style="text-align:right;padding:8px 14px;font-size:10px;font-weight:700;color:#475569">20D</th>
+                    <th style="text-align:right;padding:8px 14px;font-size:10px;font-weight:700;color:#f59e0b;letter-spacing:0.08em;text-transform:uppercase">SIGNAL ({sig_mode})</th>
                 </tr>
             </thead>
             <tbody>{rows_html}</tbody>
