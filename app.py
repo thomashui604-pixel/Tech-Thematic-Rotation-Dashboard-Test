@@ -919,7 +919,6 @@ def render_momentum(stock_df: pd.DataFrame, b_stats: pd.DataFrame, z_label: str)
     </div>
     """)
 
-# ... (keep existing imports and code above render_correlations)
 
 # ── CORRELATION TAB ────────────────────────────────────────────────────────────
 def plot_heatmap(corr_df: pd.DataFrame, title: str):
@@ -988,6 +987,13 @@ def render_correlations(prices_df: pd.DataFrame, baskets: dict):
     # Filter for the lookback window
     recent_basket_ret = basket_ret_df.tail(lookback)
     basket_corr = recent_basket_ret.corr()
+    
+    # --- NEW SORTING LOGIC FOR BASKETS ---
+    if len(basket_corr) > 1:
+        mean_basket_corr = (basket_corr.sum() - 1) / (len(basket_corr) - 1)
+        mean_basket_corr = mean_basket_corr.sort_values(ascending=False)
+        sorted_baskets = mean_basket_corr.index
+        basket_corr = basket_corr.loc[sorted_baskets, sorted_baskets]
 
     # ── 2. WITHIN-BASKET CORRELATION (SORTED) ──
     # Get constituents of the currently selected basket
@@ -1041,7 +1047,7 @@ def render_correlations(prices_df: pd.DataFrame, baskets: dict):
     with col1:
         st.markdown(f'<div style="font-size:12px;font-weight:700;color:#94a3b8;margin-bottom:8px">THEME CORRELATIONS ({lookback}d)</div>', unsafe_allow_html=True)
         if not basket_corr.empty:
-            st.plotly_chart(plot_heatmap(basket_corr, "Cross-Basket Matrix"), use_container_width=True)
+            st.plotly_chart(plot_heatmap(basket_corr, "Cross-Basket Matrix (Sorted)"), use_container_width=True)
             
     with col2:
         st.markdown(f'<div style="font-size:12px;font-weight:700;color:#94a3b8;margin-bottom:8px">{sel.upper()} CONSTITUENTS (SORTED)</div>', unsafe_allow_html=True)
@@ -1061,7 +1067,6 @@ def render_correlations(prices_df: pd.DataFrame, baskets: dict):
     st.divider()
 
     # ── ROLLING CORRELATION ANALYSIS ──
-    # ... existing rolling correlation code ...
     st.markdown(f"""
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
         <div style="width:3px;height:20px;background:#f59e0b;border-radius:2px"></div>
@@ -1152,6 +1157,7 @@ def render_correlations(prices_df: pd.DataFrame, baskets: dict):
         <div><span style="color:#64748b">Range:</span> <span style="color:#e2e8f0;font-weight:700">{min_corr:.2f}</span> to <span style="color:#e2e8f0;font-weight:700">{max_corr:.2f}</span></div>
     </div>
     """, unsafe_allow_html=True)
+
 
 # ── MAIN ───────────────────────────────────────────────────────────────────────
 def main():
