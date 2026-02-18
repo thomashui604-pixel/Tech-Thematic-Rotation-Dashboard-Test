@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots  # Added for stacked charts
+from plotly.subplots import make_subplots
 import streamlit as st
 import yfinance as yf
 from io import StringIO
@@ -46,8 +46,8 @@ Z_WINDOWS = {
     "504d (Biennial)":    504,
 }
 
-# CHANGED: Increased from "2y" to "5y" to allow longer rolling correlation history
-FETCH_PERIOD = "5y"  
+FETCH_PERIOD = "5y"  # Extended history for rolling correlations
+
 
 # ── CUSTOM CSS ─────────────────────────────────────────────────────────────────
 st.markdown("""
@@ -590,8 +590,6 @@ def render_basket_cards(b_stats: pd.DataFrame):
                 st.rerun()
 
 
-# ... inside app.py ...
-
 # ── OVERVIEW TAB ───────────────────────────────────────────────────────────────
 def render_overview(b_stats: pd.DataFrame, stock_df: pd.DataFrame, z_window: int, z_label: str):
     sel = st.session_state.selected_basket
@@ -993,7 +991,7 @@ def render_correlations(prices_df: pd.DataFrame, baskets: dict):
             # Count active constituents per day
             basket_counts[name] = returns_df[tickers].count(axis=1)
     
-    # Drop rows only where we have NO basket data at all, rather than partial data
+    # Drop rows only where we have NO basket data at all
     basket_ret_df = pd.DataFrame(basket_returns).dropna(how='all')
     
     if basket_ret_df.empty:
@@ -1014,7 +1012,7 @@ def render_correlations(prices_df: pd.DataFrame, baskets: dict):
     recent_basket_ret = basket_ret_df.tail(lookback)
     basket_corr = recent_basket_ret.corr()
     
-    # --- NEW SORTING LOGIC FOR BASKETS ---
+    # --- BASKET SORTING LOGIC ---
     if len(basket_corr) > 1:
         mean_basket_corr = (basket_corr.sum() - 1) / (len(basket_corr) - 1)
         mean_basket_corr = mean_basket_corr.sort_values(ascending=False)
@@ -1022,9 +1020,7 @@ def render_correlations(prices_df: pd.DataFrame, baskets: dict):
         basket_corr = basket_corr.loc[sorted_baskets, sorted_baskets]
 
     # ── 2. WITHIN-BASKET CORRELATION (SORTED) ──
-    # Get constituents of the currently selected basket
     sel_tickers = [t for t in baskets[sel]["tickers"] if t in returns_df.columns]
-    
     outliers_html = ""
     
     if len(sel_tickers) < 2:
@@ -1035,24 +1031,19 @@ def render_correlations(prices_df: pd.DataFrame, baskets: dict):
         stock_corr = recent_stock_ret.corr()
         
         # Sort by Mean Correlation to identify outliers
-        # (Sum of correlations - 1) / (N - 1) to get average pairwise corr excluding self
         mean_corr = (stock_corr.sum() - 1) / (len(stock_corr) - 1)
         mean_corr = mean_corr.sort_values(ascending=False)
         
-        # Reorder the matrix
         sorted_tickers = mean_corr.index
         stock_corr = stock_corr.loc[sorted_tickers, sorted_tickers]
 
-        # Generate Outlier Visuals (Bottom 3 lowest correlations)
-        bottom_3 = mean_corr.tail(3).sort_values(ascending=True) # Lowest first
+        # Generate Outlier Visuals
+        bottom_3 = mean_corr.tail(3).sort_values(ascending=True) 
         basket_avg = mean_corr.mean()
         
         for t, score in bottom_3.items():
-            # If score is significantly below average, flag it
-            bar_w = max(1, int((score + 1) / 2 * 100)) # Normalize -1..1 to 0..100
+            bar_w = max(1, int((score + 1) / 2 * 100)) 
             diff = basket_avg - score
-            
-            # Color logic: Very low correlation (<0.3 or >0.3 below mean) is yellow/orange
             is_deviant = diff > 0.2
             val_c = "#f59e0b" if is_deviant else "#94a3b8"
             
@@ -1067,9 +1058,8 @@ def render_correlations(prices_df: pd.DataFrame, baskets: dict):
                 </div>
             </div>"""
 
-    # ── RENDER ──
+    # ── RENDER MATRICES ──
     col1, col2 = st.columns(2)
-    
     with col1:
         st.markdown(f'<div style="font-size:12px;font-weight:700;color:#94a3b8;margin-bottom:8px">THEME CORRELATIONS ({lookback}d)</div>', unsafe_allow_html=True)
         if not basket_corr.empty:
@@ -1079,8 +1069,6 @@ def render_correlations(prices_df: pd.DataFrame, baskets: dict):
         st.markdown(f'<div style="font-size:12px;font-weight:700;color:#94a3b8;margin-bottom:8px">{sel.upper()} CONSTITUENTS (SORTED)</div>', unsafe_allow_html=True)
         if not stock_corr.empty:
             st.plotly_chart(plot_heatmap(stock_corr, "Sorted by Avg Correlation"), use_container_width=True)
-            
-            # Outlier Box
             if outliers_html:
                 st.markdown(f"""
                 <div style="background:#080f1a;border:1px solid #1e293b;border-radius:6px;padding:12px;margin-top:10px">
@@ -1122,21 +1110,46 @@ def render_correlations(prices_df: pd.DataFrame, baskets: dict):
     with rc3:
         roll_window = st.slider("Rolling Window (Trading Days)", 10, 252, 63)
 
-    # Computation
-    series_a = basket_ret_df[sel]
-    
+    # ── DATA PREPARATION FOR ROLLING CHART ──
+    # Series B is always the comparison target
     if roll_target == "Other Baskets":
         series_b = basket_ret_df[compare_to]
         line_color = baskets[compare_to].get("color", "#cbd5e1")
+        # Series A is the standard selected basket
+        series_a = basket_ret_df[sel]
+        depth_series = basket_counts[sel].reindex(series_a.index)
+        
     else:
+        # CONSTITUENT MODE
         series_b = returns_df[compare_to]
-        line_color = "#cbd5e1" # default for stock
+        line_color = "#cbd5e1" 
+        
+        # Check for double-counting (Is target in the selected basket?)
+        is_constituent = compare_to in baskets[sel]["tickers"]
+        
+        if is_constituent:
+            # Dynamic Exclusion: Create a temp basket excluding the target
+            adj_tickers = [t for t in baskets[sel]["tickers"] if t != compare_to and t in returns_df.columns]
+            
+            if not adj_tickers:
+                st.error(f"Cannot calculate correlation: {compare_to} is the only stock in {sel}.")
+                return
+                
+            # Re-calculate basket return without target
+            series_a = returns_df[adj_tickers].mean(axis=1)
+            depth_series = returns_df[adj_tickers].count(axis=1).reindex(series_a.index)
+            
+            st.caption(f"ℹ️ **Adjusted Calculation:** Excluded {compare_to} from {sel} basket return to prevent double-counting.")
+        else:
+            # Target is not in basket (rare in this UI, but possible if changed manually)
+            series_a = basket_ret_df[sel]
+            depth_series = basket_counts[sel].reindex(series_a.index)
 
     # Calculate Rolling Correlation
     rolling_corr = series_a.rolling(window=roll_window).corr(series_b).dropna()
     
-    # Align counts to the rolling correlation timeframe
-    depth_series = basket_counts[sel].reindex(rolling_corr.index)
+    # Realign depth series
+    depth_series = depth_series.reindex(rolling_corr.index)
 
     # Plot using Subplots
     fig_roll = make_subplots(
