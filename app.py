@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots  # Added for stacked charts
 import streamlit as st
 import yfinance as yf
 from io import StringIO
@@ -956,19 +957,24 @@ def plot_heatmap(corr_df: pd.DataFrame, title: str):
 def render_correlations(prices_df: pd.DataFrame, baskets: dict):
     sel = st.session_state.selected_basket
     
-    # Calculate daily returns for all stocks
-    returns_df = prices_df.pct_change().dropna()
+    # CHANGED: Removed .dropna() so recent IPOs (like ARM) don't truncate history for older stocks
+    returns_df = prices_df.pct_change()
     
     # ── 1. CROSS-BASKET CORRELATION ──
     # Construct a dataframe of Basket Returns (Equal-Weighted)
     basket_returns = {}
+    basket_counts = {} # New: store counts for history depth
+    
     for name, cfg in baskets.items():
         tickers = [t for t in cfg["tickers"] if t in returns_df.columns]
         if tickers:
-            # Mean return of the constituents for that day
+            # Mean return of the constituents for that day (ignores NaNs automatically)
             basket_returns[name] = returns_df[tickers].mean(axis=1)
+            # Count active constituents per day
+            basket_counts[name] = returns_df[tickers].count(axis=1)
     
-    basket_ret_df = pd.DataFrame(basket_returns)
+    # Drop rows only where we have NO basket data at all, rather than partial data
+    basket_ret_df = pd.DataFrame(basket_returns).dropna(how='all')
     
     if basket_ret_df.empty:
         st.info("Insufficient data for correlation analysis.")
@@ -1072,7 +1078,7 @@ def render_correlations(prices_df: pd.DataFrame, baskets: dict):
         <div style="width:3px;height:20px;background:#f59e0b;border-radius:2px"></div>
         <span style="font-size:13px;font-weight:700;color:#e2e8f0">Rolling Correlation History</span>
     </div>
-    <div style="font-size:11px;color:#475569;margin-left:13px;margin-bottom:20px">Analyze stability of relationships over time</div>
+    <div style="font-size:11px;color:#475569;margin-left:13px;margin-bottom:20px">Analyze stability of relationships over time · <span style="color:#f59e0b">Basket Depth</span> chart shows count of active stocks.</div>
     """, unsafe_allow_html=True)
 
     if sel not in basket_ret_df.columns:
@@ -1108,39 +1114,78 @@ def render_correlations(prices_df: pd.DataFrame, baskets: dict):
 
     # Calculate Rolling Correlation
     rolling_corr = series_a.rolling(window=roll_window).corr(series_b).dropna()
-
-    # Plot
-    fig_roll = go.Figure()
     
-    # Add zero line
-    fig_roll.add_hline(y=0, line=dict(color="#334155", width=1, dash="dash"))
-    fig_roll.add_hline(y=0.8, line=dict(color="#1e293b", width=1, dash="dot"))
-    fig_roll.add_hline(y=-0.8, line=dict(color="#1e293b", width=1, dash="dot"))
+    # Align counts to the rolling correlation timeframe
+    depth_series = basket_counts[sel].reindex(rolling_corr.index)
 
+    # Plot using Subplots
+    fig_roll = make_subplots(
+        rows=2, cols=1, 
+        shared_xaxes=True,
+        vertical_spacing=0.08,
+        row_heights=[0.7, 0.3]
+    )
+    
+    # Add zero lines
+    fig_roll.add_hline(y=0, line=dict(color="#334155", width=1, dash="dash"), row=1, col=1)
+    fig_roll.add_hline(y=0.8, line=dict(color="#1e293b", width=1, dash="dot"), row=1, col=1)
+    fig_roll.add_hline(y=-0.8, line=dict(color="#1e293b", width=1, dash="dot"), row=1, col=1)
+
+    # Trace 1: Correlation
     fig_roll.add_trace(go.Scatter(
         x=rolling_corr.index,
         y=rolling_corr.values,
         mode="lines",
         name=f"Corr({sel}, {compare_to})",
         line=dict(color=line_color, width=2)
-    ))
+    ), row=1, col=1)
+    
+    # Trace 2: Basket Depth
+    fig_roll.add_trace(go.Scatter(
+        x=depth_series.index,
+        y=depth_series.values,
+        mode="lines",
+        name="Active Constituents",
+        fill='tozeroy',
+        line=dict(color="#334155", width=1),
+        hovertemplate="%{y} active stocks<extra></extra>"
+    ), row=2, col=1)
 
     layout_roll = dict(**PLOTLY_LAYOUT)
     layout_roll.update(
-        height=350,
-        yaxis=dict(
-            range=[-1.1, 1.1],
-            gridcolor="#1e293b",
-            zeroline=False,
-            title=dict(text="Correlation Coefficient", font=dict(size=10, color="#64748b"))
-        ),
-        xaxis=dict(
-            title=dict(text=f"Date ({roll_window}d Rolling Window)", font=dict(size=10, color="#64748b"))
-        ),
+        height=400,
         margin=dict(l=50, r=20, t=20, b=40),
-        showlegend=True
+        showlegend=True,
     )
     fig_roll.update_layout(**layout_roll)
+    
+    # Update axes specific properties
+    fig_roll.update_yaxes(
+        range=[-1.1, 1.1], 
+        gridcolor="#1e293b", 
+        zeroline=False,
+        title=dict(text="Correlation", font=dict(size=10, color="#64748b")),
+        row=1, col=1
+    )
+    fig_roll.update_yaxes(
+        gridcolor="#1e293b", 
+        zeroline=False,
+        title=dict(text="Count", font=dict(size=10, color="#64748b")),
+        row=2, col=1
+    )
+    fig_roll.update_xaxes(
+        gridcolor="#1e293b",
+        zerolinecolor="#334155",
+        linecolor="#1e293b",
+        row=1, col=1
+    )
+    fig_roll.update_xaxes(
+        title=dict(text=f"Date ({roll_window}d Rolling Window)", font=dict(size=10, color="#64748b")),
+        gridcolor="#1e293b",
+        zerolinecolor="#334155",
+        linecolor="#1e293b",
+        row=2, col=1
+    )
     
     st.plotly_chart(fig_roll, use_container_width=True)
     
