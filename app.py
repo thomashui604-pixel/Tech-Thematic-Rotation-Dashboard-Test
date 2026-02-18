@@ -1061,9 +1061,11 @@ def main():
     stock_df = build_stock_stats(prices_df, baskets, z_window)
     b_stats  = basket_stats(baskets, stock_df)
 
-# ... inside main(), after render_basket_cards ...
+    # Basket cards
+    render_basket_cards(b_stats)
+    st.markdown("<div style='height:24px'/>", unsafe_allow_html=True)
 
-    # Tabs (Added "Correlations" tab)
+    # Tabs (Added Correlation Tab here)
     tab_ov, tab_rot, tab_mom, tab_corr, tab_settings = st.tabs(["Overview", "Rotation Map", "Momentum Ranks", "Correlations", "⚙ Settings"])
 
     with tab_ov:
@@ -1080,7 +1082,3 @@ def main():
 
     with tab_settings:
         render_settings()
-
-
-if __name__ == "__main__":
-    main()
