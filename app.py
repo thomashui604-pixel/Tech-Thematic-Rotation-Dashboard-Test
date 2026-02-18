@@ -919,12 +919,18 @@ def render_momentum(stock_df: pd.DataFrame, b_stats: pd.DataFrame, z_label: str)
     </div>
     """)
 
+# ... (keep existing imports and code above render_correlations)
+
 # ── CORRELATION TAB ────────────────────────────────────────────────────────────
 def plot_heatmap(corr_df: pd.DataFrame, title: str):
     """Generates a styled Plotly heatmap for correlations."""
+    # Mask the upper triangle (optional, but cleaner for symmetric matrices)
     mask = np.triu(np.ones_like(corr_df, dtype=bool), k=1)
+    
+    # Custom text for the cells (only show 2 decimal places)
     text = np.around(corr_df.values, 2).astype(str)
     
+    # Create Heatmap
     fig = go.Figure(data=go.Heatmap(
         z=corr_df.values,
         x=corr_df.columns,
@@ -932,7 +938,7 @@ def plot_heatmap(corr_df: pd.DataFrame, title: str):
         text=text,
         texttemplate="%{text}",
         textfont={"size": 10, "color": "#e2e8f0"},
-        colorscale="RdBu",  
+        colorscale="RdBu",  # Red (neg) to Blue (pos)
         zmin=-1, zmax=1,
         showscale=False,
         xgap=1, ygap=1,
@@ -941,9 +947,9 @@ def plot_heatmap(corr_df: pd.DataFrame, title: str):
     layout = dict(**PLOTLY_LAYOUT)
     layout.update(
         title=dict(text=title, font=dict(color="#e2e8f0", size=14)),
-        height=500 + (len(corr_df) * 15), 
+        height=500 + (len(corr_df) * 15), # dynamic height
         xaxis=dict(**PLOTLY_LAYOUT["xaxis"], side="bottom"),
-        yaxis=dict(**PLOTLY_LAYOUT["yaxis"], autorange="reversed"),
+        yaxis=dict(**PLOTLY_LAYOUT["yaxis"], autorange="reversed"), # Top-to-bottom
     )
     fig.update_layout(**layout)
     return fig
@@ -951,14 +957,16 @@ def plot_heatmap(corr_df: pd.DataFrame, title: str):
 def render_correlations(prices_df: pd.DataFrame, baskets: dict):
     sel = st.session_state.selected_basket
     
-    # Calculate daily returns
+    # Calculate daily returns for all stocks
     returns_df = prices_df.pct_change().dropna()
     
-    # Construct Basket Returns (Equal-Weighted)
+    # ── 1. CROSS-BASKET CORRELATION ──
+    # Construct a dataframe of Basket Returns (Equal-Weighted)
     basket_returns = {}
     for name, cfg in baskets.items():
         tickers = [t for t in cfg["tickers"] if t in returns_df.columns]
         if tickers:
+            # Mean return of the constituents for that day
             basket_returns[name] = returns_df[tickers].mean(axis=1)
     
     basket_ret_df = pd.DataFrame(basket_returns)
@@ -967,7 +975,7 @@ def render_correlations(prices_df: pd.DataFrame, baskets: dict):
         st.info("Insufficient data for correlation analysis.")
         return
 
-    # ── CONTROLS ──
+    # Lookback window slider
     col_ctrl, _ = st.columns([2, 3])
     with col_ctrl:
         lookback = st.select_slider(
@@ -977,32 +985,83 @@ def render_correlations(prices_df: pd.DataFrame, baskets: dict):
             format_func=lambda x: f"{x} Days"
         )
 
-    # ── MATRICES ──
+    # Filter for the lookback window
     recent_basket_ret = basket_ret_df.tail(lookback)
     basket_corr = recent_basket_ret.corr()
 
+    # ── 2. WITHIN-BASKET CORRELATION (SORTED) ──
+    # Get constituents of the currently selected basket
     sel_tickers = [t for t in baskets[sel]["tickers"] if t in returns_df.columns]
+    
+    outliers_html = ""
+    
     if len(sel_tickers) < 2:
+        st.warning(f"Need at least 2 tickers in '{sel}' to calculate correlations.")
         stock_corr = pd.DataFrame()
     else:
         recent_stock_ret = returns_df[sel_tickers].tail(lookback)
         stock_corr = recent_stock_ret.corr()
+        
+        # Sort by Mean Correlation to identify outliers
+        # (Sum of correlations - 1) / (N - 1) to get average pairwise corr excluding self
+        mean_corr = (stock_corr.sum() - 1) / (len(stock_corr) - 1)
+        mean_corr = mean_corr.sort_values(ascending=False)
+        
+        # Reorder the matrix
+        sorted_tickers = mean_corr.index
+        stock_corr = stock_corr.loc[sorted_tickers, sorted_tickers]
 
+        # Generate Outlier Visuals (Bottom 3 lowest correlations)
+        bottom_3 = mean_corr.tail(3).sort_values(ascending=True) # Lowest first
+        basket_avg = mean_corr.mean()
+        
+        for t, score in bottom_3.items():
+            # If score is significantly below average, flag it
+            bar_w = max(1, int((score + 1) / 2 * 100)) # Normalize -1..1 to 0..100
+            diff = basket_avg - score
+            
+            # Color logic: Very low correlation (<0.3 or >0.3 below mean) is yellow/orange
+            is_deviant = diff > 0.2
+            val_c = "#f59e0b" if is_deviant else "#94a3b8"
+            
+            outliers_html += f"""
+            <div style="margin-bottom:6px">
+                <div style="display:flex;justify-content:space-between;margin-bottom:2px;font-size:10px">
+                    <span style="font-weight:700;color:#e2e8f0;font-family:'IBM Plex Mono'">{t}</span>
+                    <span style="color:{val_c};font-family:'IBM Plex Mono'">{score:.2f} avg</span>
+                </div>
+                <div style="height:4px;background:#1e293b;border-radius:2px;overflow:hidden">
+                    <div style="width:{bar_w}%;height:100%;background:{val_c};opacity:0.8"></div>
+                </div>
+            </div>"""
+
+    # ── RENDER ──
     col1, col2 = st.columns(2)
+    
     with col1:
         st.markdown(f'<div style="font-size:12px;font-weight:700;color:#94a3b8;margin-bottom:8px">THEME CORRELATIONS ({lookback}d)</div>', unsafe_allow_html=True)
         if not basket_corr.empty:
             st.plotly_chart(plot_heatmap(basket_corr, "Cross-Basket Matrix"), use_container_width=True)
             
     with col2:
-        st.markdown(f'<div style="font-size:12px;font-weight:700;color:#94a3b8;margin-bottom:8px">{sel.upper()} CONSTITUENTS ({lookback}d)</div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="font-size:12px;font-weight:700;color:#94a3b8;margin-bottom:8px">{sel.upper()} CONSTITUENTS (SORTED)</div>', unsafe_allow_html=True)
         if not stock_corr.empty:
-            st.plotly_chart(plot_heatmap(stock_corr, "Constituent Matrix"), use_container_width=True)
+            st.plotly_chart(plot_heatmap(stock_corr, "Sorted by Avg Correlation"), use_container_width=True)
+            
+            # Outlier Box
+            if outliers_html:
+                st.markdown(f"""
+                <div style="background:#080f1a;border:1px solid #1e293b;border-radius:6px;padding:12px;margin-top:10px">
+                    <div style="font-size:9px;font-weight:700;color:#64748b;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:10px">Least Correlated (Potential Outliers)</div>
+                    {outliers_html}
+                </div>
+                """, unsafe_allow_html=True)
 
     st.markdown("<div style='height:32px'/>", unsafe_allow_html=True)
     st.divider()
 
     # ── ROLLING CORRELATION ANALYSIS ──
+    # ... existing rolling correlation code ...
     st.markdown(f"""
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
         <div style="width:3px;height:20px;background:#f59e0b;border-radius:2px"></div>
@@ -1093,8 +1152,6 @@ def render_correlations(prices_df: pd.DataFrame, baskets: dict):
         <div><span style="color:#64748b">Range:</span> <span style="color:#e2e8f0;font-weight:700">{min_corr:.2f}</span> to <span style="color:#e2e8f0;font-weight:700">{max_corr:.2f}</span></div>
     </div>
     """, unsafe_allow_html=True)
-
-# ... (keep main() and rest of file below)
 
 # ── MAIN ───────────────────────────────────────────────────────────────────────
 def main():
