@@ -45,7 +45,7 @@ Z_WINDOWS = {
     "504d (Biennial)":    504,
 }
 
-FETCH_PERIOD = "2y"  # needs ~504 trading days for longest z-window
+FETCH_PERIOD = "5y"  # needs ~504 trading days for longest z-window
 
 
 # ── CUSTOM CSS ─────────────────────────────────────────────────────────────────
