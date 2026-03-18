@@ -205,15 +205,33 @@ def rolling_return_series(prices: pd.Series, lookback: int) -> pd.Series:
 
 
 def rolling_zscore(prices: pd.Series, lookback: int, z_window: int):
-    rets = rolling_return_series(prices, lookback)
-    if len(rets) < z_window:
+    # 1. Calculate daily returns to avoid autocorrelation
+    daily_rets = prices.pct_change().dropna()
+    
+    if len(daily_rets) < z_window + lookback:
         return None
-    window_slice = rets.iloc[-z_window:]
-    mu    = window_slice.mean()
-    sigma = window_slice.std(ddof=0)
-    if sigma < 1e-8:
+        
+    # 2. Strict Out-of-Sample Window
+    # If we are measuring a 5-day return today, the historical vol baseline 
+    # must stop 5 days ago. Otherwise, the days making up our current return 
+    # leak into the volatility baseline.
+    historical_daily_rets = daily_rets.iloc[-(z_window + lookback) : -lookback]
+    
+    # 3. Calculate daily standard deviation (using sample std, ddof=1)
+    daily_sigma = historical_daily_rets.std(ddof=1)
+    
+    if daily_sigma < 1e-8:
         return 0.0
-    return float((rets.iloc[-1] - mu) / sigma)
+        
+    # 4. Scale volatility to the lookback period
+    # Volatility scales with the square root of time
+    period_sigma = daily_sigma * np.sqrt(lookback) * 100
+    
+    # 5. Get actual period return (The Observation)
+    period_ret = ret_pct(prices, lookback)
+    
+    # 6. Calculate Z-score (assuming mu = 0 for momentum scaling)
+    return float(period_ret / period_sigma)
 
 
 def ytd_return(prices: pd.Series) -> float:
