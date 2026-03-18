@@ -81,5 +81,19 @@
       "VRNS",
       "RBRK"
     ]
+  },
+  "Crypto": {
+    "color": "#3b82f6",
+    "tickers": [
+      "COIN",
+      "MARA",
+      "HUT",
+      "BITF",
+      "SOFI",
+      "RIOT",
+      "CIFR",
+      "CRCL",
+      "WULF"
+    ]
   }
 }
