@@ -651,10 +651,10 @@ def render_rotation(b_stats: pd.DataFrame, z_label: str):
 
     q1, q2, q3, q4 = st.columns(4)
     quadrants = [
-        ("LAGGING · ACCEL",  "20d z < 0, 5d z > 0",  "#f59e0b"),
-        ("LEADING · ACCEL",  "20d z > 0, 5d z > 0",  "#10b981"),
-        ("LAGGING · DECEL",  "20d z < 0, 5d z < 0",  "#ef4444"),
-        ("LEADING · DECEL",  "20d z > 0, 5d z < 0",  "#8b5cf6"),
+        ("LAGGING · DECEL",  "5d z < 0, 20d z < 0",  "#ef4444"),
+        ("LAGGING · ACCEL",  "5d z > 0, 20d z < 0",  "#f59e0b"),
+        ("LEADING · DECEL",  "5d z < 0, 20d z > 0",  "#8b5cf6"),
+        ("LEADING · ACCEL",  "5d z > 0, 20d z > 0",  "#10b981"),
     ]
     for col, (q, desc, color) in zip([q1, q2, q3, q4], quadrants):
         col.markdown(f"""
@@ -672,16 +672,16 @@ def render_rotation(b_stats: pd.DataFrame, z_label: str):
 
     fig = go.Figure()
     for x0, x1, y0, y1, col in [
-        (-5, 0,  0,  5,  "rgba(245,158,11,0.04)"),
-        ( 0, 5,  0,  5,  "rgba(16,185,129,0.04)"),
-        (-5, 0, -5,  0,  "rgba(239,68,68,0.04)"),
-        ( 0, 5, -5,  0,  "rgba(139,92,246,0.04)"),
+        (-5, 0, -5,  0,  "rgba(239,68,68,0.04)"),     # bottom-left: lagging+decel
+        ( 0, 5, -5,  0,  "rgba(245,158,11,0.04)"),     # bottom-right: lagging+accel
+        (-5, 0,  0,  5,  "rgba(139,92,246,0.04)"),     # top-left: leading+decel
+        ( 0, 5,  0,  5,  "rgba(16,185,129,0.04)"),     # top-right: leading+accel
     ]:
         fig.add_shape(type="rect", x0=x0, x1=x1, y0=y0, y1=y1,
                       fillcolor=col, line_width=0, layer="below")
 
     for _, row in b_stats.iterrows():
-        x, y = row["avgZ20d"], row["avgZ5d"]
+        x, y = row["avgZ5d"], row["avgZ20d"]
         color = row["color"]
         label = row["basket"][:7] + "…" if len(row["basket"]) > 7 else row["basket"]
         fig.add_trace(go.Scatter(
@@ -711,8 +711,8 @@ def render_rotation(b_stats: pd.DataFrame, z_label: str):
     layout = dict(**PLOTLY_LAYOUT)
     layout.update(
         height=420, showlegend=False,
-        xaxis=dict(**PLOTLY_LAYOUT["xaxis"], title=dict(text="20d z-score (σ)", font=dict(color="#475569", size=10))),
-        yaxis=dict(**PLOTLY_LAYOUT["yaxis"], title=dict(text="5d z-score (σ)",  font=dict(color="#475569", size=10))),
+        xaxis=dict(**PLOTLY_LAYOUT["xaxis"], title=dict(text="5d z-score (σ)", font=dict(color="#475569", size=10))),
+        yaxis=dict(**PLOTLY_LAYOUT["yaxis"], title=dict(text="20d z-score (σ)",  font=dict(color="#475569", size=10))),
     )
     fig.update_layout(**layout)
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
