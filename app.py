@@ -54,8 +54,6 @@ INTERVALS = [
     ("6-Month",  126),
     ("12-Month", 252),
 ]
-INTERVAL_KEYS = [f"ret_{lb}" for _, lb in INTERVALS]
-Z_INTERVAL_KEYS = [f"z_{lb}" for _, lb in INTERVALS]
 
 
 # ── CUSTOM CSS ─────────────────────────────────────────────────────────────────
@@ -329,15 +327,6 @@ def z_html(v, size=13):
     c = _color(v)
     return f'<span style="color:{c};font-family:\'IBM Plex Mono\',monospace;font-weight:700;font-size:{size}px">{_sign(v)} {abs(v):.2f}σ</span>'
 
-def signal_html(z):
-    if z is None:
-        return '<span style="color:#334155;font-size:10px">—</span>'
-    if z > 1.5:
-        return '<span style="color:#10b981;font-weight:700;font-size:10px;border:1px solid rgba(16,185,129,0.33);border-radius:3px;padding:2px 6px">ACCEL</span>'
-    if z < -1.5:
-        return '<span style="color:#ef4444;font-weight:700;font-size:10px;border:1px solid rgba(239,68,68,0.33);border-radius:3px;padding:2px 6px">FADE</span>'
-    return '<span style="color:#64748b;font-weight:700;font-size:10px;border:1px solid rgba(100,116,139,0.33);border-radius:3px;padding:2px 6px">NEUTRAL</span>'
-
 
 def _rgb(hex_color):
     """Convert hex to r,g,b tuple string."""
@@ -489,13 +478,18 @@ def render_landing_page(b_stats: pd.DataFrame, stock_df: pd.DataFrame, z_label: 
         if show_z:
             # Map period to basket-level z column
             _bz_map = {"1d":"avgZ1d","5d":"avgZ5d","20d":"avgZ20d",
-                       "3m":f"avgZ_63","6m":f"avgZ_126","12m":f"avgZ_252","ytd":"avgZ_ytd"}
+                       "3m":"avgZ_63","6m":"avgZ_126","12m":"avgZ_252","ytd":"avgZ_ytd"}
             basket_perf = b_row.get(_bz_map.get(pp, "avgZ5d"), 0)
         else:
             _br_map = {"1d":"avg1d","5d":"avg5d","20d":"avg20d",
-                       "3m":f"avg_ret_63","6m":f"avg_ret_126","12m":f"avg_ret_252","ytd":"avg_ret_ytd"}
+                       "3m":"avg_ret_63","6m":"avg_ret_126","12m":"avg_ret_252","ytd":"avg_ret_ytd"}
             basket_perf = b_row.get(_br_map.get(pp, "avg5d"), 0)
-        basket_perf = float(basket_perf) if basket_perf is not None else 0.0
+        try:
+            basket_perf = float(basket_perf)
+            if np.isnan(basket_perf):
+                basket_perf = 0.0
+        except (TypeError, ValueError):
+            basket_perf = 0.0
         is_up = basket_perf >= 0
 
         top_html = ""
@@ -738,8 +732,8 @@ def render_rotation(b_stats: pd.DataFrame, z_label: str):
             ),
             hovertemplate=(
                 f"<b style='color:{color}'>{row['basket']}</b><br>"
-                f"20d z: {'+'if x>=0 else ''}{x:.2f}σ<br>"
-                f"5d z:  {'+'if y>=0 else ''}{y:.2f}σ<extra></extra>"
+                f"5d z: {'+'if x>=0 else ''}{x:.2f}σ<br>"
+                f"20d z: {'+'if y>=0 else ''}{y:.2f}σ<extra></extra>"
             ),
             name=row["basket"],
         ))
