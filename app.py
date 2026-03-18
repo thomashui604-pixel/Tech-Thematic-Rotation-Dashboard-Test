@@ -161,6 +161,8 @@ if "expanded_basket" not in st.session_state:
     st.session_state.expanded_basket = None  # None or basket name
 if "display_mode" not in st.session_state:
     st.session_state.display_mode = "returns"  # "returns" or "zscore"
+if "preview_period" not in st.session_state:
+    st.session_state.preview_period = "5d"  # key into preview period options
 
 
 # ── DATA FETCHING ──────────────────────────────────────────────────────────────
@@ -385,7 +387,7 @@ def render_landing_page(b_stats: pd.DataFrame, stock_df: pd.DataFrame, z_label: 
     """Main landing page — universal controls + square grid cards + full-width expanded detail."""
 
     # ── Universal Control Bar ──
-    ctrl1, ctrl2, ctrl3 = st.columns([2, 2, 6])
+    ctrl1, ctrl2, ctrl3 = st.columns([2, 2, 2])
 
     with ctrl1:
         z_options = list(Z_WINDOWS.keys())
@@ -413,6 +415,38 @@ def render_landing_page(b_stats: pd.DataFrame, stock_df: pd.DataFrame, z_label: 
         if toggled:
             st.session_state.display_mode = "zscore" if current_mode == "returns" else "returns"
             st.rerun()
+
+    # Preview period options: map label -> (ret_col, z_col)
+    _PREVIEW_PERIODS = {
+        "1d":  ("ret1d",  "z1d",  "1D"),
+        "5d":  ("ret5d",  "z5d",  "5D"),
+        "20d": ("ret20d", "z20d", "20D"),
+        "3m":  ("ret_63", "z_63", "3M"),
+        "6m":  ("ret_126","z_126","6M"),
+        "12m": ("ret_252","z_252","12M"),
+        "ytd": ("ret_ytd","z_ytd","YTD"),
+    }
+
+    with ctrl3:
+        period_keys = list(_PREVIEW_PERIODS.keys())
+        period_labels = [_PREVIEW_PERIODS[k][2] for k in period_keys]
+        cur_period = st.session_state.preview_period
+        cur_idx = period_keys.index(cur_period) if cur_period in period_keys else 1
+        new_idx = st.selectbox(
+            "Preview Period",
+            range(len(period_keys)),
+            index=cur_idx,
+            format_func=lambda i: f"Preview: {period_labels[i]}",
+            key="preview_period_select",
+            label_visibility="collapsed",
+        )
+        if period_keys[new_idx] != st.session_state.preview_period:
+            st.session_state.preview_period = period_keys[new_idx]
+            st.rerun()
+
+    # Resolve preview columns
+    pp = st.session_state.preview_period
+    pp_ret_col, pp_z_col, pp_label = _PREVIEW_PERIODS[pp]
 
     mode_display = "RAW RETURNS %" if st.session_state.display_mode == "returns" else "Z-SCORE MOMENTUM σ"
     st.markdown(f"""
@@ -456,8 +490,8 @@ def render_landing_page(b_stats: pd.DataFrame, stock_df: pd.DataFrame, z_label: 
         rgb = _rgb(color)
         is_exp = expanded == basket_name
 
-        # Sort for top/bottom preview
-        sort_col = "z5d" if show_z else "ret5d"
+        # Sort for top/bottom preview using selected period
+        sort_col = pp_z_col if show_z else pp_ret_col
         sorted_m = members.dropna(subset=[sort_col]).sort_values(sort_col, ascending=False) if show_z else members.sort_values(sort_col, ascending=False)
         top3 = sorted_m.head(3)
         bot3 = sorted_m.tail(3).iloc[::-1]
@@ -503,11 +537,11 @@ def render_landing_page(b_stats: pd.DataFrame, stock_df: pd.DataFrame, z_label: 
                     <div style="text-align:right"><div style="font-size:7px;color:#475569;font-weight:600;letter-spacing:0.06em">{m3_l}</div>{m3_v}</div>
                 </div>
                 <div style="margin-bottom:6px">
-                    <div style="font-size:8px;font-weight:700;color:#10b981;letter-spacing:0.08em;margin-bottom:3px">▲ TOP 3</div>
+                    <div style="font-size:8px;font-weight:700;color:#10b981;letter-spacing:0.08em;margin-bottom:3px">▲ TOP 3 ({pp_label})</div>
                     {top_html}
                 </div>
                 <div style="flex:1">
-                    <div style="font-size:8px;font-weight:700;color:#ef4444;letter-spacing:0.08em;margin-bottom:3px">▼ BOTTOM 3</div>
+                    <div style="font-size:8px;font-weight:700;color:#ef4444;letter-spacing:0.08em;margin-bottom:3px">▼ BOTTOM 3 ({pp_label})</div>
                     {bot_html}
                 </div>
             </div>
@@ -537,25 +571,6 @@ def render_expanded_detail(basket_name, cfg, b_row, members_df):
     color = cfg["color"]
     rgb = _rgb(color)
     show_z = st.session_state.display_mode == "zscore"
-
-    # Signal horizon selector — extended intervals
-    sig_options = [(label, lb) for label, lb in INTERVALS] + [("YTD", "ytd")]
-    sig_labels = [label for label, _ in sig_options]
-    sig_keys   = [lb for _, lb in sig_options]
-
-    col_ctrl, _ = st.columns([1, 4])
-    with col_ctrl:
-        sig_idx = st.selectbox(
-            "Signal Horizon",
-            range(len(sig_labels)),
-            index=2,  # default to 20-Day
-            format_func=lambda i: f"{sig_labels[i]} σ signal",
-            key=f"sig_{basket_name}",
-        )
-
-    sig_label = sig_labels[sig_idx]
-    sig_key = sig_keys[sig_idx]
-    target_z_col = f"z_{sig_key}" if sig_key != "ytd" else "z_ytd"
 
     # ── Basket-level Metrics (single row based on mode) ──
     if show_z:
@@ -588,7 +603,9 @@ def render_expanded_detail(basket_name, cfg, b_row, members_df):
     group_label = "Z-SCORE MOMENTUM (σ)" if show_z else "RAW RETURN %"
 
     rows_html = ""
-    for _, row in members_df.sort_values(target_z_col, ascending=False, na_position="last").iterrows():
+    # Sort by 20-day z-score by default
+    default_sort = "z_20" if show_z else "ret_20"
+    for _, row in members_df.sort_values(default_sort, ascending=False, na_position="last").iterrows():
         data_cells = ""
         if show_z:
             for _, lb in INTERVALS:
@@ -604,7 +621,6 @@ def render_expanded_detail(basket_name, cfg, b_row, members_df):
             <td style="padding:6px 10px;font-weight:700;color:#e2e8f0;font-family:'IBM Plex Mono',monospace;font-size:11px;white-space:nowrap">{row["ticker"]}</td>
             <td style="padding:6px 10px;text-align:right;color:#94a3b8;font-family:'IBM Plex Mono',monospace;font-size:11px">${row["price"]:.2f}</td>
             {data_cells}
-            <td style="padding:6px 10px;text-align:right">{signal_html(row.get(target_z_col))}</td>
         </tr>"""
 
     st.html(f"""
@@ -614,13 +630,11 @@ def render_expanded_detail(basket_name, cfg, b_row, members_df):
                 <tr style="border-bottom:1px solid #1e293b;background:#0f172a">
                     <th></th><th></th>
                     <th colspan="{n_data_cols}" style="text-align:center;padding:6px;font-size:9px;font-weight:700;color:#64748b;letter-spacing:0.05em;border-left:1px solid #1e293b;border-right:1px solid #1e293b">{group_label}</th>
-                    <th></th>
                 </tr>
                 <tr style="border-bottom:1px solid #1e293b">
                     <th style="text-align:left;padding:8px 10px;font-size:9px;font-weight:700;color:#475569;letter-spacing:0.08em">TICKER</th>
                     <th style="text-align:right;padding:8px 10px;font-size:9px;font-weight:700;color:#475569;letter-spacing:0.08em">PRICE</th>
                     {col_headers}
-                    <th style="text-align:right;padding:8px 10px;font-size:9px;font-weight:700;color:#f59e0b;letter-spacing:0.08em;white-space:nowrap">SIGNAL ({sig_label})</th>
                 </tr>
             </thead>
             <tbody>{rows_html}</tbody>
@@ -651,10 +665,10 @@ def render_rotation(b_stats: pd.DataFrame, z_label: str):
 
     q1, q2, q3, q4 = st.columns(4)
     quadrants = [
-        ("LAGGING · ACCEL",  "20d z < 0, 5d z > 0",  "#f59e0b"),
-        ("LEADING · ACCEL",  "20d z > 0, 5d z > 0",  "#10b981"),
-        ("LAGGING · DECEL",  "20d z < 0, 5d z < 0",  "#ef4444"),
-        ("LEADING · DECEL",  "20d z > 0, 5d z < 0",  "#8b5cf6"),
+        ("LAGGING · DECEL",  "5d z < 0, 20d z < 0",  "#ef4444"),
+        ("LAGGING · ACCEL",  "5d z > 0, 20d z < 0",  "#f59e0b"),
+        ("LEADING · DECEL",  "5d z < 0, 20d z > 0",  "#8b5cf6"),
+        ("LEADING · ACCEL",  "5d z > 0, 20d z > 0",  "#10b981"),
     ]
     for col, (q, desc, color) in zip([q1, q2, q3, q4], quadrants):
         col.markdown(f"""
@@ -672,16 +686,16 @@ def render_rotation(b_stats: pd.DataFrame, z_label: str):
 
     fig = go.Figure()
     for x0, x1, y0, y1, col in [
-        (-5, 0,  0,  5,  "rgba(245,158,11,0.04)"),
-        ( 0, 5,  0,  5,  "rgba(16,185,129,0.04)"),
-        (-5, 0, -5,  0,  "rgba(239,68,68,0.04)"),
-        ( 0, 5, -5,  0,  "rgba(139,92,246,0.04)"),
+        (-5, 0, -5,  0,  "rgba(239,68,68,0.04)"),     # bottom-left: lagging+decel
+        ( 0, 5, -5,  0,  "rgba(245,158,11,0.04)"),     # bottom-right: lagging+accel
+        (-5, 0,  0,  5,  "rgba(139,92,246,0.04)"),     # top-left: leading+decel
+        ( 0, 5,  0,  5,  "rgba(16,185,129,0.04)"),     # top-right: leading+accel
     ]:
         fig.add_shape(type="rect", x0=x0, x1=x1, y0=y0, y1=y1,
                       fillcolor=col, line_width=0, layer="below")
 
     for _, row in b_stats.iterrows():
-        x, y = row["avgZ20d"], row["avgZ5d"]
+        x, y = row["avgZ5d"], row["avgZ20d"]
         color = row["color"]
         label = row["basket"][:7] + "…" if len(row["basket"]) > 7 else row["basket"]
         fig.add_trace(go.Scatter(
@@ -711,8 +725,8 @@ def render_rotation(b_stats: pd.DataFrame, z_label: str):
     layout = dict(**PLOTLY_LAYOUT)
     layout.update(
         height=420, showlegend=False,
-        xaxis=dict(**PLOTLY_LAYOUT["xaxis"], title=dict(text="20d z-score (σ)", font=dict(color="#475569", size=10))),
-        yaxis=dict(**PLOTLY_LAYOUT["yaxis"], title=dict(text="5d z-score (σ)",  font=dict(color="#475569", size=10))),
+        xaxis=dict(**PLOTLY_LAYOUT["xaxis"], title=dict(text="5d z-score (σ)", font=dict(color="#475569", size=10))),
+        yaxis=dict(**PLOTLY_LAYOUT["yaxis"], title=dict(text="20d z-score (σ)",  font=dict(color="#475569", size=10))),
     )
     fig.update_layout(**layout)
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
