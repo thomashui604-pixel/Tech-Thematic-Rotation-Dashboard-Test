@@ -387,9 +387,37 @@ def render_landing_page(b_stats: pd.DataFrame, stock_df: pd.DataFrame, z_label: 
     """Main landing page — universal controls + square grid cards + full-width expanded detail."""
 
     # ── Universal Control Bar ──
+    # Preview period options: map label -> (ret_col, z_col, display_label)
+    _PREVIEW_PERIODS = {
+        "1d":  ("ret1d",  "z1d",  "1D"),
+        "5d":  ("ret5d",  "z5d",  "5D"),
+        "20d": ("ret20d", "z20d", "20D"),
+        "3m":  ("ret_63", "z_63", "3M"),
+        "6m":  ("ret_126","z_126","6M"),
+        "12m": ("ret_252","z_252","12M"),
+        "ytd": ("ret_ytd","z_ytd","YTD"),
+    }
+
     ctrl1, ctrl2, ctrl3 = st.columns([2, 2, 2])
 
     with ctrl1:
+        period_keys = list(_PREVIEW_PERIODS.keys())
+        period_labels = [_PREVIEW_PERIODS[k][2] for k in period_keys]
+        cur_period = st.session_state.preview_period
+        cur_idx = period_keys.index(cur_period) if cur_period in period_keys else 1
+        new_idx = st.selectbox(
+            "Period",
+            range(len(period_keys)),
+            index=cur_idx,
+            format_func=lambda i: f"Period: {period_labels[i]}",
+            key="preview_period_select",
+            label_visibility="collapsed",
+        )
+        if period_keys[new_idx] != st.session_state.preview_period:
+            st.session_state.preview_period = period_keys[new_idx]
+            st.rerun()
+
+    with ctrl2:
         z_options = list(Z_WINDOWS.keys())
         z_idx = z_options.index(z_label) if z_label in z_options else 2
         new_z_label = st.selectbox(
@@ -404,7 +432,7 @@ def render_landing_page(b_stats: pd.DataFrame, stock_df: pd.DataFrame, z_label: 
             st.session_state.z_window = new_z_val
             st.rerun()
 
-    with ctrl2:
+    with ctrl3:
         mode_labels = {"returns": "Raw Returns %", "zscore": "Z-Score Momentum σ"}
         current_mode = st.session_state.display_mode
         toggled = st.button(
@@ -414,34 +442,6 @@ def render_landing_page(b_stats: pd.DataFrame, stock_df: pd.DataFrame, z_label: 
         )
         if toggled:
             st.session_state.display_mode = "zscore" if current_mode == "returns" else "returns"
-            st.rerun()
-
-    # Preview period options: map label -> (ret_col, z_col)
-    _PREVIEW_PERIODS = {
-        "1d":  ("ret1d",  "z1d",  "1D"),
-        "5d":  ("ret5d",  "z5d",  "5D"),
-        "20d": ("ret20d", "z20d", "20D"),
-        "3m":  ("ret_63", "z_63", "3M"),
-        "6m":  ("ret_126","z_126","6M"),
-        "12m": ("ret_252","z_252","12M"),
-        "ytd": ("ret_ytd","z_ytd","YTD"),
-    }
-
-    with ctrl3:
-        period_keys = list(_PREVIEW_PERIODS.keys())
-        period_labels = [_PREVIEW_PERIODS[k][2] for k in period_keys]
-        cur_period = st.session_state.preview_period
-        cur_idx = period_keys.index(cur_period) if cur_period in period_keys else 1
-        new_idx = st.selectbox(
-            "Preview Period",
-            range(len(period_keys)),
-            index=cur_idx,
-            format_func=lambda i: f"Preview: {period_labels[i]}",
-            key="preview_period_select",
-            label_visibility="collapsed",
-        )
-        if period_keys[new_idx] != st.session_state.preview_period:
-            st.session_state.preview_period = period_keys[new_idx]
             st.rerun()
 
     # Resolve preview columns
@@ -455,7 +455,7 @@ def render_landing_page(b_stats: pd.DataFrame, stock_df: pd.DataFrame, z_label: 
             ▌ Theme Baskets
         </div>
         <span style="font-size:9px;color:#475569;font-family:'IBM Plex Mono',monospace">
-            z-window: {z_label} &nbsp;·&nbsp; {mode_display}
+            z-window: {z_label} &nbsp;·&nbsp; {mode_display} &nbsp;·&nbsp; Period: {pp_label}
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -496,6 +496,19 @@ def render_landing_page(b_stats: pd.DataFrame, stock_df: pd.DataFrame, z_label: 
         top3 = sorted_m.head(3)
         bot3 = sorted_m.tail(3).iloc[::-1]
 
+        # Determine basket-level performance for the selected period for color coding
+        if show_z:
+            # Map period to basket-level z column
+            _bz_map = {"1d":"avgZ1d","5d":"avgZ5d","20d":"avgZ20d",
+                       "3m":f"avgZ_63","6m":f"avgZ_126","12m":f"avgZ_252","ytd":"avgZ_ytd"}
+            basket_perf = b_row.get(_bz_map.get(pp, "avgZ5d"), 0)
+        else:
+            _br_map = {"1d":"avg1d","5d":"avg5d","20d":"avg20d",
+                       "3m":f"avg_ret_63","6m":f"avg_ret_126","12m":f"avg_ret_252","ytd":"avg_ret_ytd"}
+            basket_perf = b_row.get(_br_map.get(pp, "avg5d"), 0)
+        basket_perf = float(basket_perf) if basket_perf is not None else 0.0
+        is_up = basket_perf >= 0
+
         top_html = ""
         for _, r in top3.iterrows():
             top_html += _mini_row_html(r["ticker"], r[sort_col], show_z)
@@ -513,23 +526,44 @@ def render_landing_page(b_stats: pd.DataFrame, stock_df: pd.DataFrame, z_label: 
             m2_l, m2_v = "5D", pct_html(b_row["avg5d"], 11)
             m3_l, m3_v = "20D", pct_html(b_row["avg20d"], 11)
 
-        border = f"2px solid rgba({rgb},0.6)" if is_exp else "1px solid #1e293b"
-        bg = "#0a1120" if is_exp else "#080f1a"
+        # Color-coded border based on period performance
+        perf_color = "#10b981" if is_up else "#ef4444"
+        perf_rgb = _rgb(perf_color)
+        if is_exp:
+            border = f"2px solid rgba({rgb},0.6)"
+            bg = "#0a1120"
+        else:
+            border = f"1px solid rgba({perf_rgb},0.3)"
+            bg = "#080f1a"
         indicator = f'<div style="width:6px;height:6px;border-radius:50%;background:{color};box-shadow:0 0 6px {color}"></div>' if is_exp else ""
+
+        # Performance badge for the selected period
+        perf_sign = "▲" if is_up else "▼"
+        if show_z:
+            perf_display = f"{abs(basket_perf):.2f}σ"
+        else:
+            perf_display = f"{abs(basket_perf):.2f}%"
+        perf_badge = f'<span style="color:{perf_color};font-family:\'IBM Plex Mono\',monospace;font-weight:700;font-size:12px">{perf_sign} {perf_display}</span>'
+
+        # Subtle left-edge glow
+        glow_style = f"box-shadow:inset 3px 0 8px -4px {'rgba(16,185,129,0.3)' if is_up else 'rgba(239,68,68,0.3)'};"
 
         with grid_cols[i % cols_per_row]:
             st.html(f"""
-            <div style="background:{bg};border:{border};border-radius:10px;padding:14px 16px;min-height:260px;display:flex;flex-direction:column">
-                <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+            <div style="background:{bg};border:{border};border-radius:10px;padding:14px 16px;min-height:260px;display:flex;flex-direction:column;{glow_style}">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
                     <div style="width:3px;height:22px;background:{color};border-radius:2px;flex-shrink:0"></div>
                     <div style="flex:1;min-width:0">
                         <div style="font-size:13px;font-weight:700;color:#e2e8f0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{basket_name}</div>
                     </div>
                     {indicator}
                 </div>
-                <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px">
-                    <span style="background:rgba({rgb},0.12);color:{color};border:1px solid rgba({rgb},0.25);border-radius:3px;padding:1px 6px;font-size:8px;font-weight:700">{b_row["n"]} STOCKS</span>
-                    {rotation_label_html(b_row["avgZ5d"], b_row["avgZ20d"], size=8)}
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+                    <div style="display:flex;align-items:center;gap:6px">
+                        <span style="background:rgba({rgb},0.12);color:{color};border:1px solid rgba({rgb},0.25);border-radius:3px;padding:1px 6px;font-size:8px;font-weight:700">{b_row["n"]} STOCKS</span>
+                        {rotation_label_html(b_row["avgZ5d"], b_row["avgZ20d"], size=8)}
+                    </div>
+                    {perf_badge}
                 </div>
                 <div style="display:flex;justify-content:space-between;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid #1e293b">
                     <div><div style="font-size:7px;color:#475569;font-weight:600;letter-spacing:0.06em">{m1_l}</div>{m1_v}</div>
