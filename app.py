@@ -149,6 +149,16 @@ def _load_default_baskets():
             pass
     return {k: dict(v) for k, v in DEFAULT_BASKETS.items()}
 
+
+def _save_baskets():
+    """Auto-save current baskets to baskets.json in the app directory."""
+    try:
+        baskets_path = Path(__file__).parent / "baskets.json"
+        with open(baskets_path, "w") as f:
+            json.dump(st.session_state.baskets, f, indent=2)
+    except Exception:
+        pass  # silently fail if no write access
+
 if "baskets" not in st.session_state:
     st.session_state.baskets = _load_default_baskets()
 if "editing_basket" not in st.session_state:
@@ -327,27 +337,6 @@ def signal_html(z):
     if z < -1.5:
         return '<span style="color:#ef4444;font-weight:700;font-size:10px;border:1px solid rgba(239,68,68,0.33);border-radius:3px;padding:2px 6px">FADE</span>'
     return '<span style="color:#64748b;font-weight:700;font-size:10px;border:1px solid rgba(100,116,139,0.33);border-radius:3px;padding:2px 6px">NEUTRAL</span>'
-
-
-def rotation_label(z5d, z20d):
-    pos   = "LEADING" if z20d >= 0 else "LAGGING"
-    pos_c = "#10b981" if z20d >= 0 else "#ef4444"
-    if z5d > z20d:
-        dir_l, dir_c = "ACCEL", "#10b981"
-    else:
-        dir_l, dir_c = "DECEL", "#ef4444"
-    return pos, pos_c, dir_l, dir_c
-
-
-def rotation_label_html(z5d, z20d, size=9):
-    pos, pos_c, dir_l, dir_c = rotation_label(z5d, z20d)
-    return (
-        f'<span style="font-size:{size}px;font-weight:700;font-family:\'IBM Plex Mono\',monospace">'
-        f'<span style="color:{pos_c}">{pos}</span>'
-        f'<span style="color:#334155"> · </span>'
-        f'<span style="color:{dir_c}">{dir_l}</span>'
-        f'</span>'
-    )
 
 
 def _rgb(hex_color):
@@ -559,16 +548,22 @@ def render_landing_page(b_stats: pd.DataFrame, stock_df: pd.DataFrame, z_label: 
                     {indicator}
                 </div>
                 <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-                    <div style="display:flex;align-items:center;gap:6px">
-                        <span style="background:rgba({rgb},0.12);color:{color};border:1px solid rgba({rgb},0.25);border-radius:3px;padding:1px 6px;font-size:8px;font-weight:700">{b_row["n"]} STOCKS</span>
-                        {rotation_label_html(b_row["avgZ5d"], b_row["avgZ20d"], size=8)}
-                    </div>
+                    <span style="background:rgba({rgb},0.12);color:{color};border:1px solid rgba({rgb},0.25);border-radius:3px;padding:1px 6px;font-size:8px;font-weight:700">{b_row["n"]} STOCKS</span>
                     {perf_badge}
                 </div>
-                <div style="display:flex;justify-content:space-between;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid #1e293b">
-                    <div><div style="font-size:7px;color:#475569;font-weight:600;letter-spacing:0.06em">{m1_l}</div>{m1_v}</div>
-                    <div style="text-align:center"><div style="font-size:7px;color:#475569;font-weight:600;letter-spacing:0.06em">{m2_l}</div>{m2_v}</div>
-                    <div style="text-align:right"><div style="font-size:7px;color:#475569;font-weight:600;letter-spacing:0.06em">{m3_l}</div>{m3_v}</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid #1e293b">
+                    <div style="background:#0b1322;border-radius:5px;padding:6px 8px;text-align:center">
+                        <div style="font-size:7px;color:#475569;font-weight:600;letter-spacing:0.06em;margin-bottom:2px">{m1_l}</div>
+                        <div>{m1_v}</div>
+                    </div>
+                    <div style="background:#0b1322;border-radius:5px;padding:6px 8px;text-align:center">
+                        <div style="font-size:7px;color:#475569;font-weight:600;letter-spacing:0.06em;margin-bottom:2px">{m2_l}</div>
+                        <div>{m2_v}</div>
+                    </div>
+                    <div style="background:#0b1322;border-radius:5px;padding:6px 8px;text-align:center">
+                        <div style="font-size:7px;color:#475569;font-weight:600;letter-spacing:0.06em;margin-bottom:2px">{m3_l}</div>
+                        <div>{m3_v}</div>
+                    </div>
                 </div>
                 <div style="margin-bottom:6px">
                     <div style="font-size:8px;font-weight:700;color:#10b981;letter-spacing:0.08em;margin-bottom:3px">▲ TOP 3 ({pp_label})</div>
@@ -778,7 +773,6 @@ def render_rotation(b_stats: pd.DataFrame, z_label: str):
     for _, row in sorted_rows.iterrows():
         color = row["color"]
         tickers_str = ", ".join(row["tickers"][:8]) + (f" +{len(row['tickers'])-8}" if len(row["tickers"]) > 8 else "")
-        rot_badge = rotation_label_html(row["avgZ5d"], row["avgZ20d"])
         rows_html += f"""
         <tr style="border-bottom:1px solid #0f172a">
             <td style="padding:10px 14px">
@@ -792,7 +786,6 @@ def render_rotation(b_stats: pd.DataFrame, z_label: str):
             </td>
             <td style="padding:10px 14px;text-align:right"><div style="font-size:9px;color:#475569">5d σ</div>{z_html(row["avgZ5d"])}</td>
             <td style="padding:10px 14px;text-align:right"><div style="font-size:9px;color:#475569">20d σ</div>{z_html(row["avgZ20d"])}</td>
-            <td style="padding:10px 14px;text-align:right">{rot_badge}</td>
         </tr>"""
 
     st.html(f"""
@@ -1072,6 +1065,7 @@ def render_settings():
                         if is_new:
                             st.session_state.selected_basket = name_clean
                         st.session_state.editing_basket = None
+                        _save_baskets()
                         st.rerun()
 
                 if cancelled:
@@ -1084,6 +1078,7 @@ def render_settings():
                     remaining = list(st.session_state.baskets.keys())
                     st.session_state.selected_basket = remaining[0] if remaining else None
                     st.session_state.editing_basket  = None
+                    _save_baskets()
                     st.rerun()
 
     with col_right:
@@ -1098,6 +1093,7 @@ def render_settings():
                 imported = json.load(uploaded)
                 st.session_state.baskets = imported
                 st.session_state.selected_basket = list(imported.keys())[0]
+                _save_baskets()
                 st.success("Imported!")
                 st.rerun()
             except Exception as e:
