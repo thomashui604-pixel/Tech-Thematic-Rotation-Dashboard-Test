@@ -9,7 +9,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import streamlit as st
 import yfinance as yf
 
@@ -881,113 +880,6 @@ def render_momentum(stock_df: pd.DataFrame, b_stats: pd.DataFrame, z_label: str)
     """)
 
 
-# ── CORRELATION TAB ────────────────────────────────────────────────────────────
-
-
-def render_correlations(prices_df: pd.DataFrame, baskets: dict):
-    sel = st.session_state.selected_basket
-    returns_df = prices_df.pct_change()
-
-    basket_returns = {}
-    basket_counts = {}
-    for name, cfg in baskets.items():
-        tickers = [t for t in cfg["tickers"] if t in returns_df.columns]
-        if tickers:
-            basket_returns[name] = returns_df[tickers].mean(axis=1)
-            basket_counts[name] = returns_df[tickers].count(axis=1)
-
-    basket_ret_df = pd.DataFrame(basket_returns).dropna(how='all')
-    if basket_ret_df.empty:
-        st.info("Insufficient data for correlation analysis.")
-        return
-
-    sel_tickers = [t for t in baskets[sel]["tickers"] if t in returns_df.columns]
-
-    # ── Rolling Correlation Analysis ──
-    st.markdown(f"""
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
-        <div style="width:3px;height:20px;background:#f59e0b;border-radius:2px"></div>
-        <span style="font-size:13px;font-weight:700;color:#e2e8f0">Rolling Correlation History</span>
-    </div>
-    """, unsafe_allow_html=True)
-
-    if sel not in basket_ret_df.columns:
-        return
-
-    other_baskets = [b for b in basket_ret_df.columns if b != sel]
-    constituents  = sel_tickers
-
-    rc1, rc2, rc3 = st.columns([1, 1, 2])
-    with rc1:
-        roll_target = st.selectbox("Compare Selected Basket vs...", ["Other Baskets", "Constituents"])
-    with rc2:
-        if roll_target == "Other Baskets":
-            compare_to = st.selectbox("Select Target", other_baskets)
-        else:
-            compare_to = st.selectbox("Select Target", constituents)
-    with rc3:
-        roll_window = st.slider("Rolling Window (Trading Days)", 10, 252, 63)
-
-    if roll_target == "Other Baskets":
-        series_b = basket_ret_df[compare_to]
-        line_color = baskets[compare_to].get("color", "#cbd5e1")
-        series_a = basket_ret_df[sel]
-        depth_series = basket_counts[sel].reindex(series_a.index)
-    else:
-        series_b = returns_df[compare_to]
-        line_color = "#cbd5e1"
-        is_constituent = compare_to in baskets[sel]["tickers"]
-        if is_constituent:
-            adj_tickers = [t for t in baskets[sel]["tickers"] if t != compare_to and t in returns_df.columns]
-            if not adj_tickers:
-                st.error(f"Cannot calculate: {compare_to} is the only stock in {sel}.")
-                return
-            series_a = returns_df[adj_tickers].mean(axis=1)
-            depth_series = returns_df[adj_tickers].count(axis=1).reindex(series_a.index)
-            st.caption(f"ℹ️ Excluded {compare_to} from {sel} basket return to prevent double-counting.")
-        else:
-            series_a = basket_ret_df[sel]
-            depth_series = basket_counts[sel].reindex(series_a.index)
-
-    rolling_corr = series_a.rolling(window=roll_window).corr(series_b).dropna()
-    depth_series = depth_series.reindex(rolling_corr.index)
-
-    fig_roll = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08, row_heights=[0.7, 0.3])
-    fig_roll.add_hline(y=0, line=dict(color="#334155", width=1, dash="dash"), row=1, col=1)
-    fig_roll.add_hline(y=0.8, line=dict(color="#1e293b", width=1, dash="dot"), row=1, col=1)
-    fig_roll.add_hline(y=-0.8, line=dict(color="#1e293b", width=1, dash="dot"), row=1, col=1)
-    fig_roll.add_trace(go.Scatter(
-        x=rolling_corr.index, y=rolling_corr.values, mode="lines",
-        name=f"Corr({sel}, {compare_to})", line=dict(color=line_color, width=2)
-    ), row=1, col=1)
-    fig_roll.add_trace(go.Scatter(
-        x=depth_series.index, y=depth_series.values, mode="lines",
-        name="Active Constituents", fill='tozeroy',
-        line=dict(color="#334155", width=1), hovertemplate="%{y} active stocks<extra></extra>"
-    ), row=2, col=1)
-
-    layout_roll = dict(**PLOTLY_LAYOUT)
-    layout_roll.update(height=400, margin=dict(l=50, r=20, t=20, b=40), showlegend=True)
-    fig_roll.update_layout(**layout_roll)
-    fig_roll.update_yaxes(range=[-1.1, 1.1], gridcolor="#1e293b", zeroline=False, title=dict(text="Correlation", font=dict(size=10, color="#64748b")), row=1, col=1)
-    fig_roll.update_yaxes(gridcolor="#1e293b", zeroline=False, title=dict(text="Count", font=dict(size=10, color="#64748b")), row=2, col=1)
-    fig_roll.update_xaxes(gridcolor="#1e293b", zerolinecolor="#334155", linecolor="#1e293b", row=1, col=1)
-    fig_roll.update_xaxes(title=dict(text=f"Date ({roll_window}d Rolling Window)", font=dict(size=10, color="#64748b")), gridcolor="#1e293b", zerolinecolor="#334155", linecolor="#1e293b", row=2, col=1)
-
-    st.plotly_chart(fig_roll, use_container_width=True)
-
-    latest_corr = rolling_corr.iloc[-1] if not rolling_corr.empty else 0
-    avg_corr = rolling_corr.mean()
-    min_corr = rolling_corr.min()
-    max_corr = rolling_corr.max()
-    st.markdown(f"""
-    <div style="display:flex;gap:24px;background:#080f1a;border:1px solid #1e293b;padding:12px 20px;border-radius:6px;font-family:'IBM Plex Mono',monospace;font-size:11px">
-        <div><span style="color:#64748b">Current:</span> <span style="color:#e2e8f0;font-weight:700">{latest_corr:.2f}</span></div>
-        <div><span style="color:#64748b">Average:</span> <span style="color:#e2e8f0;font-weight:700">{avg_corr:.2f}</span></div>
-        <div><span style="color:#64748b">Range:</span> <span style="color:#e2e8f0;font-weight:700">{min_corr:.2f}</span> to <span style="color:#e2e8f0;font-weight:700">{max_corr:.2f}</span></div>
-    </div>
-    """, unsafe_allow_html=True)
-
 
 # ── SETTINGS TAB ───────────────────────────────────────────────────────────────
 def render_settings():
@@ -1182,8 +1074,8 @@ def main():
     b_stats  = basket_stats(baskets, stock_df)
 
     # Tabs — Overview replaced by landing page with expandable cards
-    tab_baskets, tab_rot, tab_mom, tab_corr, tab_settings = st.tabs([
-        "Baskets", "Rotation Map", "Momentum Ranks", "Correlations", "⚙ Settings"
+    tab_baskets, tab_rot, tab_mom, tab_settings = st.tabs([
+        "Baskets", "Rotation Map", "Momentum Ranks", "⚙ Settings"
     ])
 
     with tab_baskets:
@@ -1194,9 +1086,6 @@ def main():
 
     with tab_mom:
         render_momentum(stock_df, b_stats, z_label)
-
-    with tab_corr:
-        render_correlations(prices_df, baskets)
 
     with tab_settings:
         render_settings()
