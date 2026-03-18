@@ -1,8 +1,6 @@
 """
-Theme Desk — Tech Basket Monitor
-Streamlit app with live yfinance data, z-score momentum, rotation analysis, and correlation matrices.
-
-Deploy: push to GitHub → share.streamlit.io → connect repo → done.
+Theme Desk — Tech Basket Monitor (v2)
+Overhauled landing page: expandable basket cards with top/bottom performers.
 """
 
 import json
@@ -14,7 +12,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 import yfinance as yf
-from io import StringIO
 
 # ── PAGE CONFIG ────────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -46,7 +43,19 @@ Z_WINDOWS = {
     "504d (Biennial)":    504,
 }
 
-FETCH_PERIOD = "5y"  # Extended history for rolling correlations
+FETCH_PERIOD = "5y"
+
+# Extended intervals for expanded view (label, approx trading days)
+INTERVALS = [
+    ("1-Day",    1),
+    ("5-Day",    5),
+    ("20-Day",   20),
+    ("3-Month",  63),
+    ("6-Month",  126),
+    ("12-Month", 252),
+]
+INTERVAL_KEYS = [f"ret_{lb}" for _, lb in INTERVALS]
+Z_INTERVAL_KEYS = [f"z_{lb}" for _, lb in INTERVALS]
 
 
 # ── CUSTOM CSS ─────────────────────────────────────────────────────────────────
@@ -120,9 +129,6 @@ hr { border-color: #1e293b !important; }
     border-radius: 5px; padding: 4px 12px;
     font-size: 11px; color: #10b981; font-weight: 700;
 }
-.signal-accel { color: #10b981; font-weight: 700; font-size: 11px; }
-.signal-fade  { color: #ef4444; font-weight: 700; font-size: 11px; }
-.signal-neutral { color: #64748b; font-weight: 700; font-size: 11px; }
 
 /* Hide streamlit branding */
 #MainMenu { visibility: hidden; }
@@ -134,7 +140,6 @@ header { visibility: hidden; }
 
 # ── SESSION STATE ──────────────────────────────────────────────────────────────
 def _load_default_baskets():
-    """Load from baskets.json in the app directory if it exists, otherwise use hardcoded defaults."""
     baskets_path = Path(__file__).parent / "baskets.json"
     if baskets_path.exists():
         try:
@@ -146,53 +151,38 @@ def _load_default_baskets():
 
 if "baskets" not in st.session_state:
     st.session_state.baskets = _load_default_baskets()
-
 if "editing_basket" not in st.session_state:
-    st.session_state.editing_basket = None   # None | str name | "__new__"
-
+    st.session_state.editing_basket = None
 if "selected_basket" not in st.session_state:
     st.session_state.selected_basket = list(st.session_state.baskets.keys())[0]
-
 if "z_window" not in st.session_state:
     st.session_state.z_window = 252
+if "expanded_basket" not in st.session_state:
+    st.session_state.expanded_basket = None  # None or basket name
+if "display_mode" not in st.session_state:
+    st.session_state.display_mode = "returns"  # "returns" or "zscore"
 
 
 # ── DATA FETCHING ──────────────────────────────────────────────────────────────
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_prices(tickers: tuple, period: str = FETCH_PERIOD) -> pd.DataFrame:
-    """
-    Returns a DataFrame of adjusted daily closes:
-      index = dates, columns = ticker symbols
-    Cached for 5 minutes.
-    """
     if not tickers:
         return pd.DataFrame()
-
     raw = yf.download(
-        list(tickers),
-        period=period,
-        interval="1d",
-        auto_adjust=True,
-        progress=False,
-        threads=True,
+        list(tickers), period=period, interval="1d",
+        auto_adjust=True, progress=False, threads=True,
     )
-
     if raw.empty:
         return pd.DataFrame()
-
     close = raw["Close"] if "Close" in raw.columns else raw
-
-    # Single ticker returns a Series — normalise to DataFrame
     if isinstance(close, pd.Series):
         close = close.to_frame(name=tickers[0])
-
     close = close.dropna(how="all").ffill()
     return close
 
 
 # ── COMPUTATION ───────────────────────────────────────────────────────────────
 def ret_pct(prices: pd.Series, lookback: int) -> float:
-    """Simple point-to-point % return over `lookback` trading days."""
     n = len(prices)
     if n < lookback + 1:
         return 0.0
@@ -202,16 +192,10 @@ def ret_pct(prices: pd.Series, lookback: int) -> float:
 
 
 def rolling_return_series(prices: pd.Series, lookback: int) -> pd.Series:
-    """Rolling % return series for z-score computation."""
     return prices.pct_change(lookback).dropna() * 100
 
 
 def rolling_zscore(prices: pd.Series, lookback: int, z_window: int):
-    """
-    Z-score the most recent `lookback`-day return against a rolling
-    `z_window`-observation window of that return series.
-    Returns float or None if insufficient history.
-    """
     rets = rolling_return_series(prices, lookback)
     if len(rets) < z_window:
         return None
@@ -223,63 +207,99 @@ def rolling_zscore(prices: pd.Series, lookback: int, z_window: int):
     return float((rets.iloc[-1] - mu) / sigma)
 
 
+def ytd_return(prices: pd.Series) -> float:
+    """YTD % return — from last trading day of prior year to latest price."""
+    if prices.empty:
+        return 0.0
+    current_year = prices.index[-1].year
+    prior_year = prices[prices.index.year < current_year]
+    if prior_year.empty:
+        return 0.0
+    prev = prior_year.iloc[-1]
+    cur  = prices.iloc[-1]
+    return ((cur - prev) / prev) * 100 if prev != 0 else 0.0
+
+
 def build_stock_stats(prices_df: pd.DataFrame, baskets: dict, z_window: int) -> pd.DataFrame:
-    """
-    Returns a DataFrame with one row per ticker:
-      ticker, basket, price, ret5d, ret20d, z5d, z20d
-    """
     primary = {}
     for name, cfg in baskets.items():
         for t in cfg["tickers"]:
             if t not in primary:
                 primary[t] = name
-
     rows = []
     for ticker in prices_df.columns:
         s = prices_df[ticker].dropna()
         if len(s) < 25:
             continue
-        rows.append({
+        row = {
             "ticker":  ticker,
             "basket":  primary.get(ticker, "Other"),
             "price":   round(float(s.iloc[-1]), 2),
+            # Legacy columns (keep for rotation/momentum tabs)
             "ret1d":   round(ret_pct(s, 1),  2),
             "ret5d":   round(ret_pct(s, 5),  2),
             "ret20d":  round(ret_pct(s, 20), 2),
             "z1d":     rolling_zscore(s, 1,  z_window),
             "z5d":     rolling_zscore(s, 5,  z_window),
             "z20d":    rolling_zscore(s, 20, z_window),
-        })
+            # YTD
+            "ret_ytd": round(ytd_return(s), 2),
+            "z_ytd":   rolling_zscore(s, min(len(s)-1, 252), z_window),  # approximate
+        }
+        # Extended interval columns
+        for label, lb in INTERVALS:
+            row[f"ret_{lb}"] = round(ret_pct(s, lb), 2)
+            row[f"z_{lb}"]   = rolling_zscore(s, lb, z_window)
+        rows.append(row)
 
-    return pd.DataFrame(rows) if rows else pd.DataFrame(
-        columns=["ticker","basket","price","ret1d","ret5d","ret20d","z1d","z5d","z20d"]
-    )
+    if not rows:
+        cols = ["ticker","basket","price","ret1d","ret5d","ret20d","z1d","z5d","z20d","ret_ytd","z_ytd"]
+        for _, lb in INTERVALS:
+            cols += [f"ret_{lb}", f"z_{lb}"]
+        return pd.DataFrame(columns=cols)
+    return pd.DataFrame(rows)
 
 
 def basket_stats(baskets: dict, stock_df: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate stock stats to basket level."""
     rows = []
     for name, cfg in baskets.items():
         members = stock_df[stock_df["ticker"].isin(cfg["tickers"])]
         if members.empty:
-            rows.append({"basket": name, "color": cfg["color"],
-                         "tickers": cfg["tickers"], "n": 0,
-                         "avg1d": 0, "avg5d": 0, "avg20d": 0,
-                         "avgZ1d": 0, "avgZ5d": 0, "avgZ20d": 0})
+            row = {"basket": name, "color": cfg["color"],
+                   "tickers": cfg["tickers"], "n": 0,
+                   "avg1d": 0, "avg5d": 0, "avg20d": 0,
+                   "avgZ1d": 0, "avgZ5d": 0, "avgZ20d": 0,
+                   "avg_ret_ytd": 0, "avgZ_ytd": 0}
+            for _, lb in INTERVALS:
+                row[f"avg_ret_{lb}"] = 0
+                row[f"avgZ_{lb}"] = 0
+            rows.append(row)
             continue
-        z_rows  = members.dropna(subset=["z1d","z5d","z20d"])
-        rows.append({
+        z_rows = members.dropna(subset=["z1d","z5d","z20d"])
+        row = {
             "basket":  name,
             "color":   cfg["color"],
             "tickers": cfg["tickers"],
             "n":       len(members),
+            # Legacy columns
             "avg1d":   round(members["ret1d"].mean(),  2),
             "avg5d":   round(members["ret5d"].mean(),  2),
             "avg20d":  round(members["ret20d"].mean(), 2),
             "avgZ1d":  round(z_rows["z1d"].mean(),  3) if not z_rows.empty else 0,
             "avgZ5d":  round(z_rows["z5d"].mean(),  3) if not z_rows.empty else 0,
             "avgZ20d": round(z_rows["z20d"].mean(), 3) if not z_rows.empty else 0,
-        })
+            # YTD
+            "avg_ret_ytd": round(members["ret_ytd"].mean(), 2),
+            "avgZ_ytd":    round(members["z_ytd"].dropna().mean(), 3) if not members["z_ytd"].dropna().empty else 0,
+        }
+        # Extended intervals
+        for _, lb in INTERVALS:
+            ret_col = f"ret_{lb}"
+            z_col = f"z_{lb}"
+            row[f"avg_ret_{lb}"] = round(members[ret_col].mean(), 2)
+            z_valid = members[z_col].dropna()
+            row[f"avgZ_{lb}"] = round(z_valid.mean(), 3) if not z_valid.empty else 0
+        rows.append(row)
     return pd.DataFrame(rows)
 
 
@@ -308,7 +328,6 @@ def signal_html(z):
 
 
 def rotation_label(z5d, z20d):
-    """Two-part label: position (leading/lagging from 20d) · direction (accel/decel from 5d vs 20d)."""
     pos   = "LEADING" if z20d >= 0 else "LAGGING"
     pos_c = "#10b981" if z20d >= 0 else "#ef4444"
     if z5d > z20d:
@@ -319,7 +338,6 @@ def rotation_label(z5d, z20d):
 
 
 def rotation_label_html(z5d, z20d, size=9):
-    """Render the two-part rotation badge."""
     pos, pos_c, dir_l, dir_c = rotation_label(z5d, z20d)
     return (
         f'<span style="font-size:{size}px;font-weight:700;font-family:\'IBM Plex Mono\',monospace">'
@@ -328,6 +346,12 @@ def rotation_label_html(z5d, z20d, size=9):
         f'<span style="color:{dir_c}">{dir_l}</span>'
         f'</span>'
     )
+
+
+def _rgb(hex_color):
+    """Convert hex to r,g,b tuple string."""
+    h = hex_color.lstrip("#")
+    return f"{int(h[0:2],16)},{int(h[2:4],16)},{int(h[4:6],16)}"
 
 
 # ── PLOTLY THEME ───────────────────────────────────────────────────────────────
@@ -343,347 +367,260 @@ PLOTLY_LAYOUT = dict(
 )
 
 
-# ── SIDEBAR ────────────────────────────────────────────────────────────────────
-def render_settings():
-    """Render settings content inside a tab (replaces sidebar)."""
 
-    col_left, col_right = st.columns([1, 1], gap="large")
+# ── LANDING PAGE: SQUARE GRID CARDS ────────────────────────────────────────────
+def _mini_row_html(ticker, val, show_z=False):
+    """Ultra-compact performer row for square card."""
+    if show_z:
+        display = f"{abs(val):.1f}σ" if val is not None else "—"
+        c = _color(val) if val is not None else "#334155"
+    else:
+        display = f"{abs(val):.1f}%"
+        c = _color(val)
+    sign = _sign(val) if val is not None else ""
+    return f'<div style="display:flex;justify-content:space-between;padding:2px 0;font-size:10px"><span style="color:#94a3b8;font-family:\'IBM Plex Mono\',monospace">{ticker}</span><span style="color:{c};font-family:\'IBM Plex Mono\',monospace;font-weight:600">{sign}{display}</span></div>'
 
-    # ── LEFT COLUMN: Z-window + Basket list + editor ──
-    with col_left:
-        st.markdown('<div style="font-size:11px;font-weight:700;color:#64748b;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:6px">Z-Score Window</div>', unsafe_allow_html=True)
-        z_label = st.selectbox(
-            "z_window_select", list(Z_WINDOWS.keys()),
-            index=list(Z_WINDOWS.values()).index(st.session_state.z_window),
+
+def render_landing_page(b_stats: pd.DataFrame, stock_df: pd.DataFrame, z_label: str):
+    """Main landing page — universal controls + square grid cards + full-width expanded detail."""
+
+    # ── Universal Control Bar ──
+    ctrl1, ctrl2, ctrl3 = st.columns([2, 2, 6])
+
+    with ctrl1:
+        z_options = list(Z_WINDOWS.keys())
+        z_idx = z_options.index(z_label) if z_label in z_options else 2
+        new_z_label = st.selectbox(
+            "Z-Score Period",
+            z_options,
+            index=z_idx,
+            key="landing_z_window",
             label_visibility="collapsed",
         )
-        st.session_state.z_window = Z_WINDOWS[z_label]
+        new_z_val = Z_WINDOWS[new_z_label]
+        if new_z_val != st.session_state.z_window:
+            st.session_state.z_window = new_z_val
+            st.rerun()
 
-        st.markdown("<div style='height:16px'/>", unsafe_allow_html=True)
-        st.markdown('<div style="font-size:11px;font-weight:700;color:#64748b;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:10px">Theme Baskets</div>', unsafe_allow_html=True)
-
-        for name, cfg in st.session_state.baskets.items():
-            col_sel, col_edit = st.columns([5, 1])
-            with col_sel:
-                is_sel = st.session_state.selected_basket == name
-                if st.button(f"{'◆ ' if is_sel else '◇ '}{name}", key=f"sel_{name}", use_container_width=True):
-                    st.session_state.selected_basket = name
-                    st.session_state.editing_basket  = None
-            with col_edit:
-                if st.button("✎", key=f"edit_{name}", help=f"Edit {name}"):
-                    st.session_state.editing_basket = name
-
-        st.markdown("<div style='height:8px'/>", unsafe_allow_html=True)
-
-        if st.button("＋ New Basket", use_container_width=True, key="new_basket_btn"):
-            st.session_state.editing_basket = "__new__"
-
-        # ── Basket editor form ──
-        editing = st.session_state.editing_basket
-        if editing:
-            st.divider()
-            is_new   = editing == "__new__"
-            existing = {} if is_new else st.session_state.baskets.get(editing, {})
-
-            st.markdown(
-                f'<div style="font-size:11px;font-weight:700;color:#e2e8f0;margin-bottom:12px">{"New Basket" if is_new else f"Edit · {editing}"}</div>',
-                unsafe_allow_html=True,
-            )
-
-            with st.form(key="basket_form", clear_on_submit=True):
-                new_name = st.text_input("Name", value="" if is_new else editing, placeholder="e.g. Fintech, EV…")
-
-                color_idx = PALETTE.index(existing.get("color", PALETTE[0])) if existing.get("color") in PALETTE else 0
-                new_color = st.selectbox("Color", PALETTE, index=color_idx,
-                                         format_func=lambda c: c)
-
-                tickers_default = ", ".join(existing.get("tickers", []))
-                tickers_raw = st.text_area(
-                    "Tickers (comma-separated)",
-                    value=tickers_default,
-                    height=80,
-                    placeholder="MSFT, AAPL, NVDA…",
-                )
-
-                col_save, col_cancel = st.columns(2)
-                with col_save:
-                    submitted = st.form_submit_button("Save", use_container_width=True, type="primary")
-                with col_cancel:
-                    cancelled = st.form_submit_button("Cancel", use_container_width=True)
-
-                if submitted:
-                    name_clean    = new_name.strip()
-                    ticker_list   = [t.strip().upper() for t in tickers_raw.replace("\n", ",").split(",") if t.strip()]
-                    ticker_unique = list(dict.fromkeys(ticker_list))
-                    dupes_removed = len(ticker_list) - len(ticker_unique)
-
-                    if not name_clean:
-                        st.error("Name is required")
-                    elif not ticker_unique:
-                        st.error("Add at least one ticker")
-                    elif is_new and name_clean in st.session_state.baskets:
-                        st.error("Name already exists")
-                    else:
-                        if dupes_removed:
-                            st.warning(f"Removed {dupes_removed} duplicate ticker{'s' if dupes_removed > 1 else ''}")
-                        if not is_new and editing != name_clean:
-                            old_data = st.session_state.baskets.pop(editing)
-                            if st.session_state.selected_basket == editing:
-                                st.session_state.selected_basket = name_clean
-
-                        st.session_state.baskets[name_clean] = {
-                            "color":   new_color,
-                            "tickers": ticker_unique,
-                        }
-                        if is_new:
-                            st.session_state.selected_basket = name_clean
-                        st.session_state.editing_basket = None
-                        st.rerun()
-
-                if cancelled:
-                    st.session_state.editing_basket = None
-                    st.rerun()
-
-            if not is_new:
-                if st.button(f"🗑 Delete '{editing}'", key="delete_basket", use_container_width=True):
-                    del st.session_state.baskets[editing]
-                    remaining = list(st.session_state.baskets.keys())
-                    st.session_state.selected_basket = remaining[0] if remaining else None
-                    st.session_state.editing_basket  = None
-                    st.rerun()
-
-    # ── RIGHT COLUMN: Config export / import ──
-    with col_right:
-        st.markdown('<div style="font-size:11px;font-weight:700;color:#64748b;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:8px">Config</div>', unsafe_allow_html=True)
-
-        basket_json = json.dumps(st.session_state.baskets, indent=2)
-        st.download_button(
-            "⬇ Export baskets.json",
-            data=basket_json,
-            file_name="baskets.json",
-            mime="application/json",
+    with ctrl2:
+        mode_labels = {"returns": "Raw Returns %", "zscore": "Z-Score Momentum σ"}
+        current_mode = st.session_state.display_mode
+        toggled = st.button(
+            f"Showing: {mode_labels[current_mode]}  ⇄",
+            key="toggle_display_mode",
             use_container_width=True,
         )
+        if toggled:
+            st.session_state.display_mode = "zscore" if current_mode == "returns" else "returns"
+            st.rerun()
 
-        uploaded = st.file_uploader("⬆ Import baskets.json", type="json", label_visibility="collapsed")
-        if uploaded:
-            try:
-                imported = json.load(uploaded)
-                st.session_state.baskets = imported
-                st.session_state.selected_basket = list(imported.keys())[0]
-                st.success("Imported!")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Invalid file: {e}")
-
-        # ── Ticker Diagnostics ──
-        st.markdown("<div style='height:24px'/>", unsafe_allow_html=True)
-        st.markdown('<div style="font-size:11px;font-weight:700;color:#64748b;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:10px">Ticker Diagnostics</div>', unsafe_allow_html=True)
-
-        baskets = st.session_state.baskets
-        has_issues = False
-        diag_html = ""
-
-        # Check for duplicates within a single basket
-        for name, cfg in baskets.items():
-            seen = {}
-            for t in cfg["tickers"]:
-                seen[t] = seen.get(t, 0) + 1
-            dupes = {t: c for t, c in seen.items() if c > 1}
-            if dupes:
-                has_issues = True
-                color = cfg.get("color", "#64748b")
-                for t, c in dupes.items():
-                    diag_html += f"""
-                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-                        <span style="color:#ef4444;font-size:12px;font-weight:900">✕</span>
-                        <span style="font-size:11px;color:#e2e8f0;font-family:'IBM Plex Mono',monospace;font-weight:700">{t}</span>
-                        <span style="font-size:10px;color:#94a3b8">repeated {c}× in</span>
-                        <span style="background:rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},0.13);color:{color};border:1px solid rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},0.27);border-radius:3px;padding:1px 6px;font-size:9px;font-weight:700">{name}</span>
-                    </div>"""
-
-        # Check for tickers shared across baskets
-        ticker_to_baskets = {}
-        for name, cfg in baskets.items():
-            for t in set(cfg["tickers"]):
-                ticker_to_baskets.setdefault(t, []).append(name)
-        cross_dupes = {t: bs for t, bs in ticker_to_baskets.items() if len(bs) > 1}
-
-        if cross_dupes:
-            has_issues = True
-            for t, bs in sorted(cross_dupes.items()):
-                tags = ""
-                for b in bs:
-                    color = baskets[b].get("color", "#64748b")
-                    tags += f'<span style="background:rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},0.13);color:{color};border:1px solid rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},0.27);border-radius:3px;padding:1px 6px;font-size:9px;font-weight:700">{b}</span> '
-                diag_html += f"""
-                <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
-                    <span style="color:#f59e0b;font-size:12px;font-weight:900">⚠</span>
-                    <span style="font-size:11px;color:#e2e8f0;font-family:'IBM Plex Mono',monospace;font-weight:700">{t}</span>
-                    <span style="font-size:10px;color:#94a3b8">appears in {len(bs)} baskets:</span>
-                    {tags}
-                </div>"""
-
-        if has_issues:
-            st.html(f"""
-            <div style="background:#080f1a;border:1px solid #1e293b;border-radius:8px;padding:16px">
-                {diag_html}
-            </div>
-            """)
-        else:
-            st.html("""
-            <div style="background:#080f1a;border:1px solid #1e293b;border-radius:8px;padding:16px;display:flex;align-items:center;gap:8px">
-                <span style="color:#10b981;font-size:12px;font-weight:900">✓</span>
-                <span style="font-size:11px;color:#10b981;font-weight:600">All clean — no duplicate tickers found</span>
-            </div>
-            """)
-
-
-# ── BASKET CARDS ROW ───────────────────────────────────────────────────────────
-def render_basket_cards(b_stats: pd.DataFrame):
-    st.markdown('<div style="font-size:9px;font-weight:700;color:#94a3b8;letter-spacing:0.15em;text-transform:uppercase;margin-bottom:12px">▌ Theme Baskets — Raw % Returns</div>', unsafe_allow_html=True)
-
-    n = len(b_stats)
-    if n == 0:
-        st.info("No baskets defined. Add one in the sidebar.")
-        return
-
-    cols = st.columns(min(n, 5))
-    for i, (_, row) in enumerate(b_stats.iterrows()):
-        if i >= len(cols):
-            break
-        color  = row["color"]
-        avg1d  = row["avg1d"]
-        avg5d  = row["avg5d"]
-        avg20d = row["avg20d"]
-        selected = st.session_state.selected_basket == row["basket"]
-
-        border = f"2px solid {color}" if selected else "1px solid #1e293b"
-        bg     = "#0f172a" if selected else "#080f1a"
-        bar_w  = min(100, max(0, 50 + avg5d * 5))
-        rot_html = rotation_label_html(row["avgZ5d"], row["avgZ20d"], size=9)
-
-        with cols[i]:
-            st.markdown(f"""
-            <div onclick="" style="
-                background:{bg};border:{border};border-radius:8px;
-                padding:14px 16px;cursor:pointer;position:relative;overflow:hidden;
-            ">
-                <div style="font-size:12px;font-weight:700;color:#e2e8f0;margin-bottom:6px">{row["basket"]}</div>
-                <div style="display:inline-block;background:rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},0.13);color:{color};border:1px solid rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},0.27);border-radius:3px;padding:1px 7px;font-size:9px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:10px">{row["n"]} stocks</div>
-                <div style="display:flex;justify-content:space-between;margin-bottom:6px">
-                    <div><div style="font-size:9px;color:#475569;margin-bottom:2px">1D</div>{pct_html(avg1d, 13)}</div>
-                    <div style="text-align:center"><div style="font-size:9px;color:#475569;margin-bottom:2px">5D</div>{pct_html(avg5d, 13)}</div>
-                    <div style="text-align:right"><div style="font-size:9px;color:#475569;margin-bottom:2px">20D</div>{pct_html(avg20d, 13)}</div>
-                </div>
-                <div style="margin-bottom:8px">{rot_html}</div>
-                <div style="height:2px;background:#1e293b;border-radius:2px">
-                    <div style="height:100%;width:{bar_w}%;background:linear-gradient(90deg,rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},0.33),{color});border-radius:2px"></div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            # Invisible button to handle clicks properly
-            if st.button("Select", key=f"card_sel_{row['basket']}", use_container_width=True,
-                         help=f"View {row['basket']}"):
-                st.session_state.selected_basket = row["basket"]
-                st.rerun()
-
-
-# ── OVERVIEW TAB ───────────────────────────────────────────────────────────────
-def render_overview(b_stats: pd.DataFrame, stock_df: pd.DataFrame, z_window: int, z_label: str):
-    sel = st.session_state.selected_basket
-    if not sel or sel not in st.session_state.baskets:
-        st.info("Select a basket from the sidebar.")
-        return
-
-    cfg    = st.session_state.baskets[sel]
-    b_row  = b_stats[b_stats["basket"] == sel]
-    if b_row.empty:
-        st.warning("No data yet for this basket.")
-        return
-    b_row = b_row.iloc[0]
-
-    # ── HEADER & CONTROLS ──
-    c_title, c_toggle = st.columns([4, 1])
-    with c_title:
-        st.markdown(f"""
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
-            <div style="width:3px;height:20px;background:#f59e0b;border-radius:2px"></div>
-            <span style="font-size:14px;font-weight:700;color:#e2e8f0">{sel}</span>
-            <span style="font-size:11px;color:#475569">· {b_row["n"]} constituents · z-window: {z_label}</span>
+    mode_display = "RAW RETURNS %" if st.session_state.display_mode == "returns" else "Z-SCORE MOMENTUM σ"
+    st.markdown(f"""
+    <div style="display:flex;align-items:center;gap:16px;margin-bottom:14px">
+        <div style="font-size:10px;font-weight:700;color:#94a3b8;letter-spacing:0.14em;text-transform:uppercase">
+            ▌ Theme Baskets
         </div>
-        """, unsafe_allow_html=True)
-    
-    with c_toggle:
-        sig_mode = st.selectbox("Signal Horizon", ["1d", "5d", "20d"], index=1, 
-                               format_func=lambda x: f"{x} σ")
-    
-    z_col_map = {"1d": "z1d", "5d": "z5d", "20d": "z20d"}
-    target_z_col = z_col_map[sig_mode]
+        <span style="font-size:9px;color:#475569;font-family:'IBM Plex Mono',monospace">
+            z-window: {z_label} &nbsp;·&nbsp; {mode_display}
+        </span>
+    </div>
+    """, unsafe_allow_html=True)
 
-    # ── SUMMARY METRICS (Grouped) ──
-    # Group 1: Raw Performance
-    st.markdown('<div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.05em;border-bottom:1px solid #1e293b;padding-bottom:4px;margin-bottom:8px">Basket Performance (Raw %)</div>', unsafe_allow_html=True)
-    c1, c2, c3, _ = st.columns([1, 1, 1, 3])
-    c1.metric("Avg 1d %", f"{'+'if b_row['avg1d']>=0 else ''}{b_row['avg1d']:.2f}%")
-    c2.metric("Avg 5d %", f"{'+'if b_row['avg5d']>=0 else ''}{b_row['avg5d']:.2f}%")
-    c3.metric("Avg 20d %", f"{'+'if b_row['avg20d']>=0 else ''}{b_row['avg20d']:.2f}%")
+    baskets = st.session_state.baskets
+    expanded = st.session_state.expanded_basket
+    show_z = st.session_state.display_mode == "zscore"
 
-    st.markdown('<div style="height:12px"></div>', unsafe_allow_html=True)
+    # ── Build card data ──
+    card_data = []
+    for basket_name, cfg in baskets.items():
+        b_row = b_stats[b_stats["basket"] == basket_name]
+        if b_row.empty:
+            continue
+        b_row = b_row.iloc[0]
+        members = stock_df[stock_df["ticker"].isin(cfg["tickers"])]
+        if members.empty:
+            continue
+        card_data.append((basket_name, cfg, b_row, members))
 
-    # Group 2: Momentum Regime
-    st.markdown('<div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.05em;border-bottom:1px solid #1e293b;padding-bottom:4px;margin-bottom:8px">Momentum Regime (Z-Score)</div>', unsafe_allow_html=True)
-    c4, c5, c6, _ = st.columns([1, 1, 1, 3])
-    c4.metric(f"Avg 1d σ", f"{'+'if b_row['avgZ1d']>=0 else ''}{b_row['avgZ1d']:.2f}σ")
-    c5.metric(f"Avg 5d σ", f"{'+'if b_row['avgZ5d']>=0 else ''}{b_row['avgZ5d']:.2f}σ")
-    c6.metric(f"Avg 20d σ", f"{'+'if b_row['avgZ20d']>=0 else ''}{b_row['avgZ20d']:.2f}σ")
-
-    st.markdown("<div style='height:24px'/>", unsafe_allow_html=True)
-
-    # ── CONSTITUENT TABLE ──
-    members = stock_df[stock_df["ticker"].isin(cfg["tickers"])]
-    if members.empty:
-        st.info("No price data loaded yet for this basket.")
+    if not card_data:
+        st.info("No baskets with data. Add tickers in Settings.")
         return
 
-    # Sort table by the selected signal horizon
+    # ── Render square grid ──
+    n_cards = len(card_data)
+    cols_per_row = min(n_cards, 5)
+    grid_cols = st.columns(cols_per_row)
+
+    for i, (basket_name, cfg, b_row, members) in enumerate(card_data):
+        color = cfg["color"]
+        rgb = _rgb(color)
+        is_exp = expanded == basket_name
+
+        # Sort for top/bottom preview
+        sort_col = "z5d" if show_z else "ret5d"
+        sorted_m = members.dropna(subset=[sort_col]).sort_values(sort_col, ascending=False) if show_z else members.sort_values(sort_col, ascending=False)
+        top3 = sorted_m.head(3)
+        bot3 = sorted_m.tail(3).iloc[::-1]
+
+        top_html = ""
+        for _, r in top3.iterrows():
+            top_html += _mini_row_html(r["ticker"], r[sort_col], show_z)
+        bot_html = ""
+        for _, r in bot3.iterrows():
+            bot_html += _mini_row_html(r["ticker"], r[sort_col], show_z)
+
+        # Header metrics
+        if show_z:
+            m1_l, m1_v = "1D σ", z_html(b_row["avgZ1d"], 11)
+            m2_l, m2_v = "5D σ", z_html(b_row["avgZ5d"], 11)
+            m3_l, m3_v = "20D σ", z_html(b_row["avgZ20d"], 11)
+        else:
+            m1_l, m1_v = "1D", pct_html(b_row["avg1d"], 11)
+            m2_l, m2_v = "5D", pct_html(b_row["avg5d"], 11)
+            m3_l, m3_v = "20D", pct_html(b_row["avg20d"], 11)
+
+        border = f"2px solid rgba({rgb},0.6)" if is_exp else "1px solid #1e293b"
+        bg = "#0a1120" if is_exp else "#080f1a"
+        indicator = f'<div style="width:6px;height:6px;border-radius:50%;background:{color};box-shadow:0 0 6px {color}"></div>' if is_exp else ""
+
+        with grid_cols[i % cols_per_row]:
+            st.html(f"""
+            <div style="background:{bg};border:{border};border-radius:10px;padding:14px 16px;min-height:260px;display:flex;flex-direction:column">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+                    <div style="width:3px;height:22px;background:{color};border-radius:2px;flex-shrink:0"></div>
+                    <div style="flex:1;min-width:0">
+                        <div style="font-size:13px;font-weight:700;color:#e2e8f0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{basket_name}</div>
+                    </div>
+                    {indicator}
+                </div>
+                <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px">
+                    <span style="background:rgba({rgb},0.12);color:{color};border:1px solid rgba({rgb},0.25);border-radius:3px;padding:1px 6px;font-size:8px;font-weight:700">{b_row["n"]} STOCKS</span>
+                    {rotation_label_html(b_row["avgZ5d"], b_row["avgZ20d"], size=8)}
+                </div>
+                <div style="display:flex;justify-content:space-between;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid #1e293b">
+                    <div><div style="font-size:7px;color:#475569;font-weight:600;letter-spacing:0.06em">{m1_l}</div>{m1_v}</div>
+                    <div style="text-align:center"><div style="font-size:7px;color:#475569;font-weight:600;letter-spacing:0.06em">{m2_l}</div>{m2_v}</div>
+                    <div style="text-align:right"><div style="font-size:7px;color:#475569;font-weight:600;letter-spacing:0.06em">{m3_l}</div>{m3_v}</div>
+                </div>
+                <div style="margin-bottom:6px">
+                    <div style="font-size:8px;font-weight:700;color:#10b981;letter-spacing:0.08em;margin-bottom:3px">▲ TOP 3</div>
+                    {top_html}
+                </div>
+                <div style="flex:1">
+                    <div style="font-size:8px;font-weight:700;color:#ef4444;letter-spacing:0.08em;margin-bottom:3px">▼ BOTTOM 3</div>
+                    {bot_html}
+                </div>
+            </div>
+            """)
+
+            btn_label = f"▾ {basket_name}" if is_exp else f"▸ {basket_name}"
+            if st.button(btn_label, key=f"expand_{basket_name}", use_container_width=True):
+                if is_exp:
+                    st.session_state.expanded_basket = None
+                else:
+                    st.session_state.expanded_basket = basket_name
+                    st.session_state.selected_basket = basket_name
+                st.rerun()
+
+    # ── Expanded detail: full width BELOW the grid ──
+    if expanded:
+        exp_match = [(bn, c, br, m) for bn, c, br, m in card_data if bn == expanded]
+        if exp_match:
+            basket_name, cfg, b_row, members = exp_match[0]
+            st.markdown("<div style='height:12px'/>", unsafe_allow_html=True)
+            render_expanded_detail(basket_name, cfg, b_row, members)
+
+
+# ── EXPANDED DETAIL VIEW ──────────────────────────────────────────────────────
+def render_expanded_detail(basket_name, cfg, b_row, members_df):
+    """Full detail view when a basket card is expanded — toggles between returns and z-score."""
+    color = cfg["color"]
+    rgb = _rgb(color)
+    show_z = st.session_state.display_mode == "zscore"
+
+    # Signal horizon selector — extended intervals
+    sig_options = [(label, lb) for label, lb in INTERVALS] + [("YTD", "ytd")]
+    sig_labels = [label for label, _ in sig_options]
+    sig_keys   = [lb for _, lb in sig_options]
+
+    col_ctrl, _ = st.columns([1, 4])
+    with col_ctrl:
+        sig_idx = st.selectbox(
+            "Signal Horizon",
+            range(len(sig_labels)),
+            index=2,  # default to 20-Day
+            format_func=lambda i: f"{sig_labels[i]} σ signal",
+            key=f"sig_{basket_name}",
+        )
+
+    sig_label = sig_labels[sig_idx]
+    sig_key = sig_keys[sig_idx]
+    target_z_col = f"z_{sig_key}" if sig_key != "ytd" else "z_ytd"
+
+    # ── Basket-level Metrics (single row based on mode) ──
+    if show_z:
+        st.markdown('<div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.05em;border-bottom:1px solid #1e293b;padding-bottom:4px;margin-bottom:8px">Momentum Regime (Avg Z-Score)</div>', unsafe_allow_html=True)
+        metric_cols = st.columns(len(INTERVALS) + 1)
+        for i, (label, lb) in enumerate(INTERVALS):
+            val = b_row[f"avgZ_{lb}"]
+            metric_cols[i].metric(f"{label} σ", f"{'+'if val>=0 else ''}{val:.2f}σ")
+        zytd_val = b_row["avgZ_ytd"]
+        metric_cols[-1].metric("YTD σ", f"{'+'if zytd_val>=0 else ''}{zytd_val:.2f}σ")
+    else:
+        st.markdown('<div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.05em;border-bottom:1px solid #1e293b;padding-bottom:4px;margin-bottom:8px">Basket Performance (Avg Raw %)</div>', unsafe_allow_html=True)
+        metric_cols = st.columns(len(INTERVALS) + 1)
+        for i, (label, lb) in enumerate(INTERVALS):
+            val = b_row[f"avg_ret_{lb}"]
+            metric_cols[i].metric(label, f"{'+'if val>=0 else ''}{val:.2f}%")
+        ytd_val = b_row["avg_ret_ytd"]
+        metric_cols[-1].metric("YTD", f"{'+'if ytd_val>=0 else ''}{ytd_val:.2f}%")
+
+    st.markdown("<div style='height:12px'/>", unsafe_allow_html=True)
+
+    # ── Full constituent table — single set of data columns based on mode ──
+    col_headers = ""
+    for label, lb in INTERVALS:
+        short = label.replace("-", "")
+        col_headers += f'<th style="text-align:right;padding:8px 10px;font-size:9px;font-weight:700;color:#475569;white-space:nowrap">{short}</th>'
+    col_headers += '<th style="text-align:right;padding:8px 10px;font-size:9px;font-weight:700;color:#475569;white-space:nowrap">YTD</th>'
+
+    n_data_cols = len(INTERVALS) + 1
+    group_label = "Z-SCORE MOMENTUM (σ)" if show_z else "RAW RETURN %"
+
     rows_html = ""
-    for _, row in members.sort_values(target_z_col, ascending=False, na_position="last").iterrows():
+    for _, row in members_df.sort_values(target_z_col, ascending=False, na_position="last").iterrows():
+        data_cells = ""
+        if show_z:
+            for _, lb in INTERVALS:
+                data_cells += f'<td style="padding:6px 10px;text-align:right">{z_html(row[f"z_{lb}"], 11)}</td>'
+            data_cells += f'<td style="padding:6px 10px;text-align:right">{z_html(row["z_ytd"], 11)}</td>'
+        else:
+            for _, lb in INTERVALS:
+                data_cells += f'<td style="padding:6px 10px;text-align:right">{pct_html(row[f"ret_{lb}"], 11)}</td>'
+            data_cells += f'<td style="padding:6px 10px;text-align:right">{pct_html(row["ret_ytd"], 11)}</td>'
+
         rows_html += f"""
         <tr style="border-bottom:1px solid #0f172a">
-            <td style="padding:8px 14px;font-weight:700;color:#e2e8f0;font-family:'IBM Plex Mono',monospace">{row["ticker"]}</td>
-            <td style="padding:8px 14px;text-align:right;color:#94a3b8;font-family:'IBM Plex Mono',monospace">${row["price"]:.2f}</td>
-            <td style="padding:8px 14px;text-align:right;background:rgba(255,255,255,0.015)">{pct_html(row["ret1d"])}</td>
-            <td style="padding:8px 14px;text-align:right;background:rgba(255,255,255,0.015)">{pct_html(row["ret5d"])}</td>
-            <td style="padding:8px 14px;text-align:right;background:rgba(255,255,255,0.015)">{pct_html(row["ret20d"])}</td>
-            <td style="padding:8px 14px;text-align:right">{z_html(row["z1d"])}</td>
-            <td style="padding:8px 14px;text-align:right">{z_html(row["z5d"])}</td>
-            <td style="padding:8px 14px;text-align:right">{z_html(row["z20d"])}</td>
-            <td style="padding:8px 14px;text-align:right">{signal_html(row[target_z_col])}</td>
+            <td style="padding:6px 10px;font-weight:700;color:#e2e8f0;font-family:'IBM Plex Mono',monospace;font-size:11px;white-space:nowrap">{row["ticker"]}</td>
+            <td style="padding:6px 10px;text-align:right;color:#94a3b8;font-family:'IBM Plex Mono',monospace;font-size:11px">${row["price"]:.2f}</td>
+            {data_cells}
+            <td style="padding:6px 10px;text-align:right">{signal_html(row.get(target_z_col))}</td>
         </tr>"""
 
     st.html(f"""
-    <div style="background:#080f1a;border:1px solid #1e293b;border-radius:8px;overflow:hidden">
-        <table style="width:100%;border-collapse:collapse;font-size:12px">
+    <div style="background:#080f1a;border:1px solid rgba({rgb},0.25);border-radius:8px;overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:11px">
             <thead>
                 <tr style="border-bottom:1px solid #1e293b;background:#0f172a">
-                    <th></th>
-                    <th></th>
-                    <th colspan="3" style="text-align:center;padding:6px;font-size:9px;font-weight:700;color:#64748b;letter-spacing:0.05em;border-left:1px solid #1e293b;border-right:1px solid #1e293b">RAW RETURN %</th>
-                    <th colspan="3" style="text-align:center;padding:6px;font-size:9px;font-weight:700;color:#64748b;letter-spacing:0.05em;border-right:1px solid #1e293b">MOMENTUM REGIME (σ)</th>
+                    <th></th><th></th>
+                    <th colspan="{n_data_cols}" style="text-align:center;padding:6px;font-size:9px;font-weight:700;color:#64748b;letter-spacing:0.05em;border-left:1px solid #1e293b;border-right:1px solid #1e293b">{group_label}</th>
                     <th></th>
                 </tr>
                 <tr style="border-bottom:1px solid #1e293b">
-                    <th style="text-align:left;padding:8px 14px;font-size:10px;font-weight:700;color:#475569;letter-spacing:0.08em;text-transform:uppercase">Ticker</th>
-                    <th style="text-align:right;padding:8px 14px;font-size:10px;font-weight:700;color:#475569;letter-spacing:0.08em;text-transform:uppercase">Price</th>
-                    <th style="text-align:right;padding:8px 14px;font-size:10px;font-weight:700;color:#475569;background:rgba(255,255,255,0.015)">1D</th>
-                    <th style="text-align:right;padding:8px 14px;font-size:10px;font-weight:700;color:#475569;background:rgba(255,255,255,0.015)">5D</th>
-                    <th style="text-align:right;padding:8px 14px;font-size:10px;font-weight:700;color:#475569;background:rgba(255,255,255,0.015)">20D</th>
-                    <th style="text-align:right;padding:8px 14px;font-size:10px;font-weight:700;color:#475569">1D</th>
-                    <th style="text-align:right;padding:8px 14px;font-size:10px;font-weight:700;color:#475569">5D</th>
-                    <th style="text-align:right;padding:8px 14px;font-size:10px;font-weight:700;color:#475569">20D</th>
-                    <th style="text-align:right;padding:8px 14px;font-size:10px;font-weight:700;color:#f59e0b;letter-spacing:0.08em;text-transform:uppercase">SIGNAL ({sig_mode})</th>
+                    <th style="text-align:left;padding:8px 10px;font-size:9px;font-weight:700;color:#475569;letter-spacing:0.08em">TICKER</th>
+                    <th style="text-align:right;padding:8px 10px;font-size:9px;font-weight:700;color:#475569;letter-spacing:0.08em">PRICE</th>
+                    {col_headers}
+                    <th style="text-align:right;padding:8px 10px;font-size:9px;font-weight:700;color:#f59e0b;letter-spacing:0.08em;white-space:nowrap">SIGNAL ({sig_label})</th>
                 </tr>
             </thead>
             <tbody>{rows_html}</tbody>
@@ -691,29 +628,27 @@ def render_overview(b_stats: pd.DataFrame, stock_df: pd.DataFrame, z_window: int
     </div>
     """)
 
+    st.markdown("<div style='height:16px'/>", unsafe_allow_html=True)
+
 
 # ── ROTATION MAP TAB ───────────────────────────────────────────────────────────
 def render_rotation(b_stats: pd.DataFrame, z_label: str):
-    col_hdr, col_z = st.columns([3, 2])
-    with col_hdr:
-        st.markdown("""
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
-            <div style="width:3px;height:20px;background:#f59e0b;border-radius:2px"></div>
-            <span style="font-size:13px;font-weight:700;color:#e2e8f0">Thematic Rotation Map</span>
-        </div>
-        <div style="font-size:11px;color:#475569;margin-left:13px">Z-scored returns — each basket normalized by its own rolling vol</div>
-        """, unsafe_allow_html=True)
+    st.markdown("""
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+        <div style="width:3px;height:20px;background:#f59e0b;border-radius:2px"></div>
+        <span style="font-size:13px;font-weight:700;color:#e2e8f0">Thematic Rotation Map</span>
+    </div>
+    <div style="font-size:11px;color:#475569;margin-left:13px">Z-scored returns — each basket normalized by its own rolling vol</div>
+    """, unsafe_allow_html=True)
 
     st.markdown(f"""
     <div class="info-box">
         <strong style="color:#f59e0b">σ</strong>&nbsp;
         Axes show <strong style="color:#94a3b8">z-scores</strong> — each basket's return divided by its own {z_label.split("(")[0].strip()} rolling std dev.
         Equal distances from origin are genuinely comparable across baskets regardless of vol regime.
-        &nbsp;·&nbsp; <span style="color:#334155;font-family:monospace">±1σ reference lines shown</span>
     </div>
     """, unsafe_allow_html=True)
 
-    # Quadrant guide
     q1, q2, q3, q4 = st.columns(4)
     quadrants = [
         ("LAGGING · ACCEL",  "20d z < 0, 5d z > 0",  "#f59e0b"),
@@ -735,10 +670,7 @@ def render_rotation(b_stats: pd.DataFrame, z_label: str):
         st.info("No basket data available.")
         return
 
-    # Scatter plot
     fig = go.Figure()
-
-    # Quadrant shading
     for x0, x1, y0, y1, col in [
         (-5, 0,  0,  5,  "rgba(245,158,11,0.04)"),
         ( 0, 5,  0,  5,  "rgba(16,185,129,0.04)"),
@@ -752,30 +684,23 @@ def render_rotation(b_stats: pd.DataFrame, z_label: str):
         x, y = row["avgZ20d"], row["avgZ5d"]
         color = row["color"]
         label = row["basket"][:7] + "…" if len(row["basket"]) > 7 else row["basket"]
-
         fig.add_trace(go.Scatter(
-            x=[x], y=[y],
-            mode="markers+text",
-            text=[label],
+            x=[x], y=[y], mode="markers+text", text=[label],
             textposition="middle center",
             textfont=dict(color=color, size=9, family="IBM Plex Mono"),
             marker=dict(
                 size=48,
-                color=f"rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},0.13)",
+                color=f"rgba({_rgb(color)},0.13)",
                 line=dict(color=color, width=1.5),
             ),
             hovertemplate=(
                 f"<b style='color:{color}'>{row['basket']}</b><br>"
                 f"20d z: {'+'if x>=0 else ''}{x:.2f}σ<br>"
-                f"5d z:  {'+'if y>=0 else ''}{y:.2f}σ<br>"
-                f"Raw 20d: {'+'if row['avg20d']>=0 else ''}{row['avg20d']:.2f}%<br>"
-                f"Raw 5d:  {'+'if row['avg5d']>=0 else ''}{row['avg5d']:.2f}%"
-                "<extra></extra>"
+                f"5d z:  {'+'if y>=0 else ''}{y:.2f}σ<extra></extra>"
             ),
             name=row["basket"],
         ))
 
-    # Reference lines
     fig.add_hline(y=0,  line=dict(color="#334155", dash="dash", width=1))
     fig.add_vline(x=0,  line=dict(color="#334155", dash="dash", width=1))
     fig.add_hline(y=1,  line=dict(color="#1e293b", dash="dot",  width=1))
@@ -785,8 +710,7 @@ def render_rotation(b_stats: pd.DataFrame, z_label: str):
 
     layout = dict(**PLOTLY_LAYOUT)
     layout.update(
-        height=420,
-        showlegend=False,
+        height=420, showlegend=False,
         xaxis=dict(**PLOTLY_LAYOUT["xaxis"], title=dict(text="20d z-score (σ)", font=dict(color="#475569", size=10))),
         yaxis=dict(**PLOTLY_LAYOUT["yaxis"], title=dict(text="5d z-score (σ)",  font=dict(color="#475569", size=10))),
     )
@@ -796,16 +720,10 @@ def render_rotation(b_stats: pd.DataFrame, z_label: str):
     # Rotation summary table
     st.markdown("""
     <div style="font-size:9px;font-weight:700;color:#94a3b8;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:4px">Rotation Summary</div>
-    <div style="font-size:10px;color:#475569;margin-bottom:12px">
-        Position from 20d z-score · Direction from 5d vs 20d z-score comparison
-    </div>
     """, unsafe_allow_html=True)
 
-    # Sort: best state first (leading+accel), worst last (lagging+decel)
     def sort_key(row):
-        pos_score = row["avgZ20d"]
-        dir_score = row["avgZ5d"] - row["avgZ20d"]
-        return pos_score + dir_score
+        return row["avgZ20d"] + (row["avgZ5d"] - row["avgZ20d"])
     sorted_rows = b_stats.iloc[b_stats.apply(sort_key, axis=1).argsort()[::-1]]
 
     rows_html = ""
@@ -813,7 +731,6 @@ def render_rotation(b_stats: pd.DataFrame, z_label: str):
         color = row["color"]
         tickers_str = ", ".join(row["tickers"][:8]) + (f" +{len(row['tickers'])-8}" if len(row["tickers"]) > 8 else "")
         rot_badge = rotation_label_html(row["avgZ5d"], row["avgZ20d"])
-
         rows_html += f"""
         <tr style="border-bottom:1px solid #0f172a">
             <td style="padding:10px 14px">
@@ -848,13 +765,11 @@ def render_momentum(stock_df: pd.DataFrame, b_stats: pd.DataFrame, z_label: str)
             <div style="width:3px;height:20px;background:#f59e0b;border-radius:2px"></div>
             <span style="font-size:13px;font-weight:700;color:#e2e8f0">Cross-Basket Momentum Ranks</span>
         </div>
-        <div style="font-size:11px;color:#475569;margin-left:13px">Z-scores — apples-to-apples across vol regimes</div>
         """, unsafe_allow_html=True)
     with col_mode:
         mode = st.radio("Mode", ["1d", "5d", "20d"], horizontal=True, key="mom_mode", label_visibility="collapsed")
 
-    z_col    = "z1d" if mode == "1d" else ("z5d" if mode == "5d" else "z20d")
-    ret_col  = "ret1d" if mode == "1d" else ("ret5d" if mode == "5d" else "ret20d")
+    z_col = "z1d" if mode == "1d" else ("z5d" if mode == "5d" else "z20d")
     valid_df = stock_df.dropna(subset=[z_col]).sort_values(z_col, ascending=False)
 
     if valid_df.empty:
@@ -870,7 +785,7 @@ def render_momentum(stock_df: pd.DataFrame, b_stats: pd.DataFrame, z_label: str)
             val   = row[z_col]
             color = st.session_state.baskets.get(row["basket"], {}).get("color", "#64748b")
             bar_w = min(100, abs(val) * 28)
-            bar_color = ("#10b981" if is_top else "#ef4444")
+            bar_color = "#10b981" if is_top else "#ef4444"
             bar_dir   = "left" if is_top else "right"
             rows += f"""
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
@@ -880,7 +795,7 @@ def render_momentum(stock_df: pd.DataFrame, b_stats: pd.DataFrame, z_label: str)
                     <div style="position:absolute;{bar_dir}:0;top:0;bottom:0;width:{bar_w}%;background:{bar_color};opacity:0.7;border-radius:2px"></div>
                 </div>
                 {z_html(val)}
-                <span style="background:rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},0.13);color:{color};border:1px solid rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},0.27);border-radius:3px;padding:1px 6px;font-size:9px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase">{row["basket"][:6]}</span>
+                <span style="background:rgba({_rgb(color)},0.13);color:{color};border:1px solid rgba({_rgb(color)},0.27);border-radius:3px;padding:1px 6px;font-size:9px;font-weight:700">{row["basket"][:6]}</span>
             </div>"""
         return rows
 
@@ -902,13 +817,6 @@ def render_momentum(stock_df: pd.DataFrame, b_stats: pd.DataFrame, z_label: str)
 
     st.markdown("<div style='height:20px'/>", unsafe_allow_html=True)
 
-    # Basket z-score ranks (same style as top/bottom panels)
-    st.markdown(f"""
-    <div style="font-size:9px;font-weight:700;color:#94a3b8;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:12px">
-        Basket z-scores ({mode}) &nbsp;·&nbsp; <span style="color:#334155;font-family:monospace">window: {z_label.split("(")[0].strip()}</span>
-    </div>
-    """, unsafe_allow_html=True)
-
     bz_col = "avgZ1d" if mode == "1d" else ("avgZ5d" if mode == "5d" else "avgZ20d")
     sorted_baskets = b_stats.sort_values(bz_col, ascending=False)
 
@@ -916,15 +824,14 @@ def render_momentum(stock_df: pd.DataFrame, b_stats: pd.DataFrame, z_label: str)
     for rank, (_, row) in enumerate(sorted_baskets.iterrows(), 1):
         val   = row[bz_col]
         color = row["color"]
-        is_pos = val >= 0
         bar_w = min(100, abs(val) * 28)
-        bar_color = "#10b981" if is_pos else "#ef4444"
-        bar_dir   = "left" if is_pos else "right"
+        bar_color = "#10b981" if val >= 0 else "#ef4444"
+        bar_dir   = "left" if val >= 0 else "right"
         basket_rows += f"""
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
             <span style="width:16px;font-size:9px;color:#475569;font-family:'IBM Plex Mono',monospace;text-align:right">{rank}</span>
             <span style="width:4px;height:24px;background:{color};border-radius:2px;flex-shrink:0"></span>
-            <span style="width:110px;font-size:11px;font-weight:700;color:#e2e8f0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{row["basket"]}</span>
+            <span style="width:110px;font-size:11px;font-weight:700;color:#e2e8f0">{row["basket"]}</span>
             <div style="flex:1;background:#0f172a;border-radius:2px;height:14px;position:relative;overflow:hidden">
                 <div style="position:absolute;{bar_dir}:0;top:0;bottom:0;width:{bar_w}%;background:{bar_color};opacity:0.7;border-radius:2px"></div>
             </div>
@@ -940,294 +847,104 @@ def render_momentum(stock_df: pd.DataFrame, b_stats: pd.DataFrame, z_label: str)
 
 
 # ── CORRELATION TAB ────────────────────────────────────────────────────────────
-def plot_heatmap(corr_df: pd.DataFrame, title: str):
-    """Generates a styled Plotly heatmap for correlations."""
-    # Mask the upper triangle (optional, but cleaner for symmetric matrices)
-    mask = np.triu(np.ones_like(corr_df, dtype=bool), k=1)
-    
-    # Custom text for the cells (only show 2 decimal places)
-    text = np.around(corr_df.values, 2).astype(str)
-    
-    # Create Heatmap
-    fig = go.Figure(data=go.Heatmap(
-        z=corr_df.values,
-        x=corr_df.columns,
-        y=corr_df.index,
-        text=text,
-        texttemplate="%{text}",
-        textfont={"size": 10, "color": "#e2e8f0"},
-        colorscale="RdBu",  # Red (neg) to Blue (pos)
-        zmin=-1, zmax=1,
-        showscale=False,
-        xgap=1, ygap=1,
-    ))
 
-    layout = dict(**PLOTLY_LAYOUT)
-    layout.update(
-        title=dict(text=title, font=dict(color="#e2e8f0", size=14)),
-        height=500 + (len(corr_df) * 15), # dynamic height
-        xaxis=dict(**PLOTLY_LAYOUT["xaxis"], side="bottom"),
-        yaxis=dict(**PLOTLY_LAYOUT["yaxis"], autorange="reversed"), # Top-to-bottom
-    )
-    fig.update_layout(**layout)
-    return fig
 
 def render_correlations(prices_df: pd.DataFrame, baskets: dict):
     sel = st.session_state.selected_basket
-    
-    # CHANGED: Removed .dropna() so recent IPOs (like ARM) don't truncate history for older stocks
     returns_df = prices_df.pct_change()
-    
-    # ── 1. CROSS-BASKET CORRELATION ──
-    # Construct a dataframe of Basket Returns (Equal-Weighted)
+
     basket_returns = {}
-    basket_counts = {} # New: store counts for history depth
-    
+    basket_counts = {}
     for name, cfg in baskets.items():
         tickers = [t for t in cfg["tickers"] if t in returns_df.columns]
         if tickers:
-            # Mean return of the constituents for that day (ignores NaNs automatically)
             basket_returns[name] = returns_df[tickers].mean(axis=1)
-            # Count active constituents per day
             basket_counts[name] = returns_df[tickers].count(axis=1)
-    
-    # Drop rows only where we have NO basket data at all
+
     basket_ret_df = pd.DataFrame(basket_returns).dropna(how='all')
-    
     if basket_ret_df.empty:
         st.info("Insufficient data for correlation analysis.")
         return
 
-    # Lookback window slider
-    col_ctrl, _ = st.columns([2, 3])
-    with col_ctrl:
-        lookback = st.select_slider(
-            "Snapshot Lookback (Matrix)",
-            options=[20, 60, 120, 252],
-            value=60,
-            format_func=lambda x: f"{x} Days"
-        )
-
-    # Filter for the lookback window
-    recent_basket_ret = basket_ret_df.tail(lookback)
-    basket_corr = recent_basket_ret.corr()
-    
-    # --- BASKET SORTING LOGIC ---
-    if len(basket_corr) > 1:
-        mean_basket_corr = (basket_corr.sum() - 1) / (len(basket_corr) - 1)
-        mean_basket_corr = mean_basket_corr.sort_values(ascending=False)
-        sorted_baskets = mean_basket_corr.index
-        basket_corr = basket_corr.loc[sorted_baskets, sorted_baskets]
-
-    # ── 2. WITHIN-BASKET CORRELATION (SORTED) ──
     sel_tickers = [t for t in baskets[sel]["tickers"] if t in returns_df.columns]
-    outliers_html = ""
-    
-    if len(sel_tickers) < 2:
-        st.warning(f"Need at least 2 tickers in '{sel}' to calculate correlations.")
-        stock_corr = pd.DataFrame()
-    else:
-        recent_stock_ret = returns_df[sel_tickers].tail(lookback)
-        stock_corr = recent_stock_ret.corr()
-        
-        # Sort by Mean Correlation to identify outliers
-        mean_corr = (stock_corr.sum() - 1) / (len(stock_corr) - 1)
-        mean_corr = mean_corr.sort_values(ascending=False)
-        
-        sorted_tickers = mean_corr.index
-        stock_corr = stock_corr.loc[sorted_tickers, sorted_tickers]
 
-        # Generate Outlier Visuals
-        bottom_3 = mean_corr.tail(3).sort_values(ascending=True) 
-        basket_avg = mean_corr.mean()
-        
-        for t, score in bottom_3.items():
-            bar_w = max(1, int((score + 1) / 2 * 100)) 
-            diff = basket_avg - score
-            is_deviant = diff > 0.2
-            val_c = "#f59e0b" if is_deviant else "#94a3b8"
-            
-            outliers_html += f"""
-            <div style="margin-bottom:6px">
-                <div style="display:flex;justify-content:space-between;margin-bottom:2px;font-size:10px">
-                    <span style="font-weight:700;color:#e2e8f0;font-family:'IBM Plex Mono'">{t}</span>
-                    <span style="color:{val_c};font-family:'IBM Plex Mono'">{score:.2f} avg</span>
-                </div>
-                <div style="height:4px;background:#1e293b;border-radius:2px;overflow:hidden">
-                    <div style="width:{bar_w}%;height:100%;background:{val_c};opacity:0.8"></div>
-                </div>
-            </div>"""
-
-    # ── RENDER MATRICES ──
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown(f'<div style="font-size:12px;font-weight:700;color:#94a3b8;margin-bottom:8px">THEME CORRELATIONS ({lookback}d)</div>', unsafe_allow_html=True)
-        if not basket_corr.empty:
-            st.plotly_chart(plot_heatmap(basket_corr, "Cross-Basket Matrix (Sorted)"), use_container_width=True)
-            
-    with col2:
-        st.markdown(f'<div style="font-size:12px;font-weight:700;color:#94a3b8;margin-bottom:8px">{sel.upper()} CONSTITUENTS (SORTED)</div>', unsafe_allow_html=True)
-        if not stock_corr.empty:
-            st.plotly_chart(plot_heatmap(stock_corr, "Sorted by Avg Correlation"), use_container_width=True)
-            if outliers_html:
-                st.markdown(f"""
-                <div style="background:#080f1a;border:1px solid #1e293b;border-radius:6px;padding:12px;margin-top:10px">
-                    <div style="font-size:9px;font-weight:700;color:#64748b;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:10px">Least Correlated (Potential Outliers)</div>
-                    {outliers_html}
-                </div>
-                """, unsafe_allow_html=True)
-
-    st.markdown("<div style='height:32px'/>", unsafe_allow_html=True)
-    st.divider()
-
-    # ── ROLLING CORRELATION ANALYSIS ──
+    # ── Rolling Correlation Analysis ──
     st.markdown(f"""
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
         <div style="width:3px;height:20px;background:#f59e0b;border-radius:2px"></div>
         <span style="font-size:13px;font-weight:700;color:#e2e8f0">Rolling Correlation History</span>
     </div>
-    <div style="font-size:11px;color:#475569;margin-left:13px;margin-bottom:20px">Analyze stability of relationships over time · <span style="color:#f59e0b">Basket Depth</span> chart shows count of active stocks.</div>
     """, unsafe_allow_html=True)
 
     if sel not in basket_ret_df.columns:
         return
 
-    # Setup comparison options
     other_baskets = [b for b in basket_ret_df.columns if b != sel]
     constituents  = sel_tickers
-    
-    # User Controls for Rolling Plot
+
     rc1, rc2, rc3 = st.columns([1, 1, 2])
     with rc1:
         roll_target = st.selectbox("Compare Selected Basket vs...", ["Other Baskets", "Constituents"])
-    
     with rc2:
         if roll_target == "Other Baskets":
             compare_to = st.selectbox("Select Target", other_baskets)
         else:
             compare_to = st.selectbox("Select Target", constituents)
-            
     with rc3:
         roll_window = st.slider("Rolling Window (Trading Days)", 10, 252, 63)
 
-    # ── DATA PREPARATION FOR ROLLING CHART ──
-    # Series B is always the comparison target
     if roll_target == "Other Baskets":
         series_b = basket_ret_df[compare_to]
         line_color = baskets[compare_to].get("color", "#cbd5e1")
-        # Series A is the standard selected basket
         series_a = basket_ret_df[sel]
         depth_series = basket_counts[sel].reindex(series_a.index)
-        
     else:
-        # CONSTITUENT MODE
         series_b = returns_df[compare_to]
-        line_color = "#cbd5e1" 
-        
-        # Check for double-counting (Is target in the selected basket?)
+        line_color = "#cbd5e1"
         is_constituent = compare_to in baskets[sel]["tickers"]
-        
         if is_constituent:
-            # Dynamic Exclusion: Create a temp basket excluding the target
             adj_tickers = [t for t in baskets[sel]["tickers"] if t != compare_to and t in returns_df.columns]
-            
             if not adj_tickers:
-                st.error(f"Cannot calculate correlation: {compare_to} is the only stock in {sel}.")
+                st.error(f"Cannot calculate: {compare_to} is the only stock in {sel}.")
                 return
-                
-            # Re-calculate basket return without target
             series_a = returns_df[adj_tickers].mean(axis=1)
             depth_series = returns_df[adj_tickers].count(axis=1).reindex(series_a.index)
-            
-            st.caption(f"ℹ️ **Adjusted Calculation:** Excluded {compare_to} from {sel} basket return to prevent double-counting.")
+            st.caption(f"ℹ️ Excluded {compare_to} from {sel} basket return to prevent double-counting.")
         else:
-            # Target is not in basket (rare in this UI, but possible if changed manually)
             series_a = basket_ret_df[sel]
             depth_series = basket_counts[sel].reindex(series_a.index)
 
-    # Calculate Rolling Correlation
     rolling_corr = series_a.rolling(window=roll_window).corr(series_b).dropna()
-    
-    # Realign depth series
     depth_series = depth_series.reindex(rolling_corr.index)
 
-    # Plot using Subplots
-    fig_roll = make_subplots(
-        rows=2, cols=1, 
-        shared_xaxes=True,
-        vertical_spacing=0.08,
-        row_heights=[0.7, 0.3]
-    )
-    
-    # Add zero lines
+    fig_roll = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08, row_heights=[0.7, 0.3])
     fig_roll.add_hline(y=0, line=dict(color="#334155", width=1, dash="dash"), row=1, col=1)
     fig_roll.add_hline(y=0.8, line=dict(color="#1e293b", width=1, dash="dot"), row=1, col=1)
     fig_roll.add_hline(y=-0.8, line=dict(color="#1e293b", width=1, dash="dot"), row=1, col=1)
-
-    # Trace 1: Correlation
     fig_roll.add_trace(go.Scatter(
-        x=rolling_corr.index,
-        y=rolling_corr.values,
-        mode="lines",
-        name=f"Corr({sel}, {compare_to})",
-        line=dict(color=line_color, width=2)
+        x=rolling_corr.index, y=rolling_corr.values, mode="lines",
+        name=f"Corr({sel}, {compare_to})", line=dict(color=line_color, width=2)
     ), row=1, col=1)
-    
-    # Trace 2: Basket Depth
     fig_roll.add_trace(go.Scatter(
-        x=depth_series.index,
-        y=depth_series.values,
-        mode="lines",
-        name="Active Constituents",
-        fill='tozeroy',
-        line=dict(color="#334155", width=1),
-        hovertemplate="%{y} active stocks<extra></extra>"
+        x=depth_series.index, y=depth_series.values, mode="lines",
+        name="Active Constituents", fill='tozeroy',
+        line=dict(color="#334155", width=1), hovertemplate="%{y} active stocks<extra></extra>"
     ), row=2, col=1)
 
     layout_roll = dict(**PLOTLY_LAYOUT)
-    layout_roll.update(
-        height=400,
-        margin=dict(l=50, r=20, t=20, b=40),
-        showlegend=True,
-    )
+    layout_roll.update(height=400, margin=dict(l=50, r=20, t=20, b=40), showlegend=True)
     fig_roll.update_layout(**layout_roll)
-    
-    # Update axes specific properties
-    fig_roll.update_yaxes(
-        range=[-1.1, 1.1], 
-        gridcolor="#1e293b", 
-        zeroline=False,
-        title=dict(text="Correlation", font=dict(size=10, color="#64748b")),
-        row=1, col=1
-    )
-    fig_roll.update_yaxes(
-        gridcolor="#1e293b", 
-        zeroline=False,
-        title=dict(text="Count", font=dict(size=10, color="#64748b")),
-        row=2, col=1
-    )
-    fig_roll.update_xaxes(
-        gridcolor="#1e293b",
-        zerolinecolor="#334155",
-        linecolor="#1e293b",
-        row=1, col=1
-    )
-    fig_roll.update_xaxes(
-        title=dict(text=f"Date ({roll_window}d Rolling Window)", font=dict(size=10, color="#64748b")),
-        gridcolor="#1e293b",
-        zerolinecolor="#334155",
-        linecolor="#1e293b",
-        row=2, col=1
-    )
-    
+    fig_roll.update_yaxes(range=[-1.1, 1.1], gridcolor="#1e293b", zeroline=False, title=dict(text="Correlation", font=dict(size=10, color="#64748b")), row=1, col=1)
+    fig_roll.update_yaxes(gridcolor="#1e293b", zeroline=False, title=dict(text="Count", font=dict(size=10, color="#64748b")), row=2, col=1)
+    fig_roll.update_xaxes(gridcolor="#1e293b", zerolinecolor="#334155", linecolor="#1e293b", row=1, col=1)
+    fig_roll.update_xaxes(title=dict(text=f"Date ({roll_window}d Rolling Window)", font=dict(size=10, color="#64748b")), gridcolor="#1e293b", zerolinecolor="#334155", linecolor="#1e293b", row=2, col=1)
+
     st.plotly_chart(fig_roll, use_container_width=True)
-    
-    # Stats row
+
     latest_corr = rolling_corr.iloc[-1] if not rolling_corr.empty else 0
-    avg_corr    = rolling_corr.mean()
-    min_corr    = rolling_corr.min()
-    max_corr    = rolling_corr.max()
-    
+    avg_corr = rolling_corr.mean()
+    min_corr = rolling_corr.min()
+    max_corr = rolling_corr.max()
     st.markdown(f"""
     <div style="display:flex;gap:24px;background:#080f1a;border:1px solid #1e293b;padding:12px 20px;border-radius:6px;font-family:'IBM Plex Mono',monospace;font-size:11px">
         <div><span style="color:#64748b">Current:</span> <span style="color:#e2e8f0;font-weight:700">{latest_corr:.2f}</span></div>
@@ -1237,9 +954,160 @@ def render_correlations(prices_df: pd.DataFrame, baskets: dict):
     """, unsafe_allow_html=True)
 
 
+# ── SETTINGS TAB ───────────────────────────────────────────────────────────────
+def render_settings():
+    col_left, col_right = st.columns([1, 1], gap="large")
+
+    with col_left:
+        st.markdown('<div style="font-size:11px;font-weight:700;color:#64748b;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:10px">Theme Baskets</div>', unsafe_allow_html=True)
+
+        for name, cfg in st.session_state.baskets.items():
+            col_sel, col_edit = st.columns([5, 1])
+            with col_sel:
+                is_sel = st.session_state.selected_basket == name
+                if st.button(f"{'◆ ' if is_sel else '◇ '}{name}", key=f"sel_{name}", use_container_width=True):
+                    st.session_state.selected_basket = name
+                    st.session_state.editing_basket  = None
+            with col_edit:
+                if st.button("✎", key=f"edit_{name}", help=f"Edit {name}"):
+                    st.session_state.editing_basket = name
+
+        st.markdown("<div style='height:8px'/>", unsafe_allow_html=True)
+
+        if st.button("＋ New Basket", use_container_width=True, key="new_basket_btn"):
+            st.session_state.editing_basket = "__new__"
+
+        editing = st.session_state.editing_basket
+        if editing:
+            st.divider()
+            is_new   = editing == "__new__"
+            existing = {} if is_new else st.session_state.baskets.get(editing, {})
+
+            st.markdown(
+                f'<div style="font-size:11px;font-weight:700;color:#e2e8f0;margin-bottom:12px">{"New Basket" if is_new else f"Edit · {editing}"}</div>',
+                unsafe_allow_html=True,
+            )
+
+            with st.form(key="basket_form", clear_on_submit=True):
+                new_name = st.text_input("Name", value="" if is_new else editing, placeholder="e.g. Fintech, EV…")
+                color_idx = PALETTE.index(existing.get("color", PALETTE[0])) if existing.get("color") in PALETTE else 0
+                new_color = st.selectbox("Color", PALETTE, index=color_idx, format_func=lambda c: c)
+                tickers_default = ", ".join(existing.get("tickers", []))
+                tickers_raw = st.text_area("Tickers (comma-separated)", value=tickers_default, height=80, placeholder="MSFT, AAPL, NVDA…")
+
+                col_save, col_cancel = st.columns(2)
+                with col_save:
+                    submitted = st.form_submit_button("Save", use_container_width=True, type="primary")
+                with col_cancel:
+                    cancelled = st.form_submit_button("Cancel", use_container_width=True)
+
+                if submitted:
+                    name_clean    = new_name.strip()
+                    ticker_list   = [t.strip().upper() for t in tickers_raw.replace("\n", ",").split(",") if t.strip()]
+                    ticker_unique = list(dict.fromkeys(ticker_list))
+                    dupes_removed = len(ticker_list) - len(ticker_unique)
+
+                    if not name_clean:
+                        st.error("Name is required")
+                    elif not ticker_unique:
+                        st.error("Add at least one ticker")
+                    elif is_new and name_clean in st.session_state.baskets:
+                        st.error("Name already exists")
+                    else:
+                        if dupes_removed:
+                            st.warning(f"Removed {dupes_removed} duplicate ticker{'s' if dupes_removed > 1 else ''}")
+                        if not is_new and editing != name_clean:
+                            st.session_state.baskets.pop(editing)
+                            if st.session_state.selected_basket == editing:
+                                st.session_state.selected_basket = name_clean
+                        st.session_state.baskets[name_clean] = {"color": new_color, "tickers": ticker_unique}
+                        if is_new:
+                            st.session_state.selected_basket = name_clean
+                        st.session_state.editing_basket = None
+                        st.rerun()
+
+                if cancelled:
+                    st.session_state.editing_basket = None
+                    st.rerun()
+
+            if not is_new:
+                if st.button(f"🗑 Delete '{editing}'", key="delete_basket", use_container_width=True):
+                    del st.session_state.baskets[editing]
+                    remaining = list(st.session_state.baskets.keys())
+                    st.session_state.selected_basket = remaining[0] if remaining else None
+                    st.session_state.editing_basket  = None
+                    st.rerun()
+
+    with col_right:
+        st.markdown('<div style="font-size:11px;font-weight:700;color:#64748b;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:8px">Config</div>', unsafe_allow_html=True)
+
+        basket_json = json.dumps(st.session_state.baskets, indent=2)
+        st.download_button("⬇ Export baskets.json", data=basket_json, file_name="baskets.json", mime="application/json", use_container_width=True)
+
+        uploaded = st.file_uploader("⬆ Import baskets.json", type="json", label_visibility="collapsed")
+        if uploaded:
+            try:
+                imported = json.load(uploaded)
+                st.session_state.baskets = imported
+                st.session_state.selected_basket = list(imported.keys())[0]
+                st.success("Imported!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Invalid file: {e}")
+
+        st.markdown("<div style='height:24px'/>", unsafe_allow_html=True)
+        st.markdown('<div style="font-size:11px;font-weight:700;color:#64748b;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:10px">Ticker Diagnostics</div>', unsafe_allow_html=True)
+
+        baskets = st.session_state.baskets
+        has_issues = False
+        diag_html = ""
+
+        for name, cfg in baskets.items():
+            seen = {}
+            for t in cfg["tickers"]:
+                seen[t] = seen.get(t, 0) + 1
+            dupes = {t: c for t, c in seen.items() if c > 1}
+            if dupes:
+                has_issues = True
+                color = cfg.get("color", "#64748b")
+                for t, c in dupes.items():
+                    diag_html += f"""
+                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+                        <span style="color:#ef4444;font-size:12px;font-weight:900">✕</span>
+                        <span style="font-size:11px;color:#e2e8f0;font-family:'IBM Plex Mono',monospace;font-weight:700">{t}</span>
+                        <span style="font-size:10px;color:#94a3b8">repeated {c}× in</span>
+                        <span style="background:rgba({_rgb(color)},0.13);color:{color};border:1px solid rgba({_rgb(color)},0.27);border-radius:3px;padding:1px 6px;font-size:9px;font-weight:700">{name}</span>
+                    </div>"""
+
+        ticker_to_baskets = {}
+        for name, cfg in baskets.items():
+            for t in set(cfg["tickers"]):
+                ticker_to_baskets.setdefault(t, []).append(name)
+        cross_dupes = {t: bs for t, bs in ticker_to_baskets.items() if len(bs) > 1}
+
+        if cross_dupes:
+            has_issues = True
+            for t, bs in sorted(cross_dupes.items()):
+                tags = ""
+                for b in bs:
+                    color = baskets[b].get("color", "#64748b")
+                    tags += f'<span style="background:rgba({_rgb(color)},0.13);color:{color};border:1px solid rgba({_rgb(color)},0.27);border-radius:3px;padding:1px 6px;font-size:9px;font-weight:700">{b}</span> '
+                diag_html += f"""
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+                    <span style="color:#f59e0b;font-size:12px;font-weight:900">⚠</span>
+                    <span style="font-size:11px;color:#e2e8f0;font-family:'IBM Plex Mono',monospace;font-weight:700">{t}</span>
+                    <span style="font-size:10px;color:#94a3b8">appears in {len(bs)} baskets:</span>
+                    {tags}
+                </div>"""
+
+        if has_issues:
+            st.html(f'<div style="background:#080f1a;border:1px solid #1e293b;border-radius:8px;padding:16px">{diag_html}</div>')
+        else:
+            st.html('<div style="background:#080f1a;border:1px solid #1e293b;border-radius:8px;padding:16px;display:flex;align-items:center;gap:8px"><span style="color:#10b981;font-size:12px;font-weight:900">✓</span><span style="font-size:11px;color:#10b981;font-weight:600">All clean — no duplicate tickers found</span></div>')
+
+
 # ── MAIN ───────────────────────────────────────────────────────────────────────
 def main():
-    # Header
     col_title, col_badge = st.columns([6, 1])
     with col_title:
         st.markdown("""
@@ -1252,10 +1120,9 @@ def main():
         </div>
         """, unsafe_allow_html=True)
 
-    # Fetch data
-    baskets    = st.session_state.baskets
-    z_window   = st.session_state.z_window
-    z_label    = next(k for k, v in Z_WINDOWS.items() if v == z_window)
+    baskets     = st.session_state.baskets
+    z_window    = st.session_state.z_window
+    z_label     = next(k for k, v in Z_WINDOWS.items() if v == z_window)
     all_tickers = tuple(sorted({t for cfg in baskets.values() for t in cfg["tickers"]}))
 
     with st.spinner("Fetching market data…"):
@@ -1273,19 +1140,16 @@ def main():
         </div>
         """, unsafe_allow_html=True)
 
-    # Compute stats
     stock_df = build_stock_stats(prices_df, baskets, z_window)
     b_stats  = basket_stats(baskets, stock_df)
 
-    # Basket cards
-    render_basket_cards(b_stats)
-    st.markdown("<div style='height:24px'/>", unsafe_allow_html=True)
+    # Tabs — Overview replaced by landing page with expandable cards
+    tab_baskets, tab_rot, tab_mom, tab_corr, tab_settings = st.tabs([
+        "Baskets", "Rotation Map", "Momentum Ranks", "Correlations", "⚙ Settings"
+    ])
 
-    # Tabs (Added Correlation Tab here)
-    tab_ov, tab_rot, tab_mom, tab_corr, tab_settings = st.tabs(["Overview", "Rotation Map", "Momentum Ranks", "Correlations", "⚙ Settings"])
-
-    with tab_ov:
-        render_overview(b_stats, stock_df, z_window, z_label)
+    with tab_baskets:
+        render_landing_page(b_stats, stock_df, z_label)
 
     with tab_rot:
         render_rotation(b_stats, z_label)
