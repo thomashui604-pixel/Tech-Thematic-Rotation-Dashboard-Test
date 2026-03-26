@@ -247,6 +247,20 @@ def ytd_return(prices: pd.Series) -> float:
     return ((cur - prev) / prev) * 100 if prev != 0 else 0.0
 
 
+def ytd_trading_days(prices: pd.Series) -> int:
+    """Count trading days elapsed in the current year (excluding the anchor day in prior year).
+    
+    This matches the YTD return calculation: from the last trading day of the
+    prior year to today.  The count equals the number of trading days in the
+    current year, which is exactly the lookback needed so that
+    ret_pct(prices, lookback) reproduces the YTD return.
+    """
+    if prices.empty:
+        return 0
+    current_year = prices.index[-1].year
+    return int((prices.index.year == current_year).sum())
+
+
 def build_stock_stats(prices_df: pd.DataFrame, baskets: dict, z_window: int) -> pd.DataFrame:
     primary = {}
     for name, cfg in baskets.items():
@@ -258,6 +272,10 @@ def build_stock_stats(prices_df: pd.DataFrame, baskets: dict, z_window: int) -> 
         s = prices_df[ticker].dropna()
         if len(s) < 25:
             continue
+
+        # Compute actual YTD trading day count for proper z-score scaling
+        ytd_days = ytd_trading_days(s)
+
         row = {
             "ticker":  ticker,
             "basket":  primary.get(ticker, "Other"),
@@ -269,9 +287,9 @@ def build_stock_stats(prices_df: pd.DataFrame, baskets: dict, z_window: int) -> 
             "z1d":     rolling_zscore(s, 1,  z_window),
             "z5d":     rolling_zscore(s, 5,  z_window),
             "z20d":    rolling_zscore(s, 20, z_window),
-            # YTD
+            # YTD — use actual trading day count so z-score matches the return
             "ret_ytd": round(ytd_return(s), 2),
-            "z_ytd":   rolling_zscore(s, min(len(s)-1, 252), z_window),  # approximate
+            "z_ytd":   rolling_zscore(s, ytd_days, z_window) if ytd_days >= 2 else None,
         }
         # Extended interval columns
         for label, lb in INTERVALS:
